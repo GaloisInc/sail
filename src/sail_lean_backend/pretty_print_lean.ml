@@ -367,7 +367,11 @@ let rec doc_pat (P_aux (p, (l, annot)) as pat) =
   | P_list pats -> separate (string ", ") (List.map doc_pat pats) |> brackets
   | P_app (Id_aux (Id "None", _), p) -> string "none"
   | P_app (cons, pats) -> doc_id_ctor (fixup_match_id cons) ^^ space ^^ separate_map (string ", ") doc_pat pats
-  | _ -> failwith ("Pattern " ^ string_of_pat_con pat ^ " " ^ string_of_pat pat ^ " not translatable yet.")
+  (* 1. Pattern P_var loop_i_lower as atom('loop_i_lower) not translatable yet *)
+  | P_var (pat, tvar) -> doc_pat pat
+  (* 1. Pattern P_struct struct { high = false, signed_rs1 = true, signed_rs2 = true } not translatable yet. *)
+  | P_struct pats -> 
+  | _ -> failwith ("1. Pattern " ^ string_of_pat_con pat ^ " " ^ string_of_pat pat ^ " not translatable yet.")
 
 (* Copied from the Coq PP *)
 let rebind_cast_pattern_vars pat typ exp =
@@ -507,6 +511,7 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
   | E_exit _ -> string "throw Error.Exit"
   | E_assert (e1, e2) -> string "assert " ^^ d_of_arg e1 ^^ space ^^ d_of_arg e2
   | E_list es -> brackets (separate_map comma_sp (doc_exp as_monadic ctx) es)
+  | E_throw e -> string "throw" ^^ space ^^ (doc_exp as_monadic ctx e)
   | _ -> failwith ("Expression " ^ string_of_exp_con full_exp ^ " " ^ string_of_exp full_exp ^ " not translatable yet.")
 
 and doc_fexp with_arrow ctx (FE_aux (FE_fexp (field, e), _)) = doc_id_ctor field ^^ string " := " ^^ doc_exp false ctx e
@@ -654,7 +659,7 @@ let doc_val ctx pat exp =
         (P_typ (typ, P_aux (P_var (P_aux (P_id id, _), TP_aux (TP_app (app_id, [TP_aux (TP_var kid, _)]), _)), _)), _)
       when Id.compare app_id (mk_id "atom") == 0 && Id.compare id (id_of_kid kid) == 0 ->
         (id, Some typ)
-    | _ -> failwith ("Pattern " ^ string_of_pat_con pat ^ " " ^ string_of_pat pat ^ " not translatable yet.")
+    | _ -> failwith ("2. Pattern " ^ string_of_pat_con pat ^ " " ^ string_of_pat pat ^ " not translatable yet.")
   in
   let typpp = match pat_typ with None -> empty | Some typ -> space ^^ colon ^^ space ^^ doc_typ ctx typ in
   let idpp = doc_id_ctor id in

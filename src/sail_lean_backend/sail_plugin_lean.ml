@@ -141,7 +141,7 @@ let lean_rewrites =
     ("attach_effects", []);
     ("remove_blocks", []);
     ("attach_effects", []);
-    (*("letbind_effects", []);*)
+    ("letbind_effects", []);
     ("remove_e_assign", []);
     ("attach_effects", []);
     ("internal_lets", []);
@@ -193,7 +193,7 @@ let create_lake_project (out_name : string) default_sail_dir =
 let output (out_name : string) env effect_info ast default_sail_dir =
   let project_main = create_lake_project out_name default_sail_dir in
   (* Uncomment for debug output of the Sail code after the rewrite passes *)
-  (* Pretty_print_sail.output_ast stdout (Type_check.strip_ast ast); *)
+  Pretty_print_sail.output_ast stdout (Type_check.strip_ast ast);
   Pretty_print_lean.pp_ast_lean env effect_info ast project_main;
   close_out project_main
 
