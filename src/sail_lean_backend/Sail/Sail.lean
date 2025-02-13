@@ -315,4 +315,24 @@ def shiftr (a : Int) (n : Int) : Int :=
   | Int.negSucc n => Sail.Nat.iterate (fun x => x * 2) (n+1) a
 
 end Int
+
+namespace BitVec
+
+def shiftl (a : BitVec n) (i : Int) : BitVec n :=
+  match i with
+  | Int.ofNat i => a <<< i
+  | Int.negSucc i => a >>> (i+1)
+
+def shiftr (a : BitVec n) (i : Int) : BitVec n :=
+  match i with
+  | Int.ofNat i => a >>> i
+  | Int.negSucc i => a <<< (i+1)
+
+def ashiftr (a : BitVec n) (i : Int) : BitVec n :=
+  match i with
+  | Int.ofNat i => BitVec.sshiftRight a i
+  | Int.negSucc i => a <<< (i+1)
+
+end BitVec
+
 end Sail

@@ -3,117 +3,177 @@ import Out.Sail.BitVec
 
 open Sail
 
-abbrev SailM := PreSailM PEmpty.elim trivialChoiceSource
+abbrev bits := (BitVec k_n)
 
-def extern_add (_ : Unit) : Int :=
-  (HAdd.hAdd 5 4)
+/-- Type quantifiers: k_a : Type -/
 
-def extern_sub (_ : Unit) : Int :=
-  (HSub.hSub 5 (-4))
+inductive option (k_a : Type) where
+  | Some (_ : k_a)
+  | None (_ : Unit)
 
-def extern_sub_nat (_ : Unit) : Nat :=
-  (HSub.hSub 5 4)
+open option
 
-def extern_negate (_ : Unit) : Int :=
-  (Neg.neg 5)
+abbrev cr_type := (BitVec 8)
 
-def extern_mult (_ : Unit) : Int :=
-  (HMul.hMul 5 4)
+inductive Register : Type where
+  | R
+  deriving DecidableEq, Hashable
+open Register
 
-def extern__shl8 (_ : Unit) : Int :=
-  (Int.shiftl 8 2)
+abbrev RegisterType : Register → Type
+  | .R => (BitVec 8)
 
-def extern__shl32 (_ : Unit) : Int :=
-  (Int.shiftl 32 1)
+open RegisterRef
+instance : Inhabited (RegisterRef RegisterType (BitVec 8)) where
+  default := .Reg R
+abbrev SailM := PreSailM RegisterType trivialChoiceSource
 
-def extern__shl1 (_ : Unit) : Int :=
-  (Int.shiftl 1 2)
+def eq_unit (x : Unit) (x : Unit) : Bool :=
+  true
 
-def extern__shl_int (_ : Unit) : Int :=
-  (Int.shiftl 4 2)
+/-- Type quantifiers: x : Int, y : Int -/
+def neq_int (x : Int) (y : Int) : Bool :=
+  (Bool.not (Eq x y))
 
-def extern__shr32 (_ : Unit) : Int :=
-  (Int.shiftl 30 1)
+/-- Type quantifiers: k_ex689# : Bool, k_ex688# : Bool -/
+def neq_bool (x : Bool) (y : Bool) : Bool :=
+  (Bool.not (Eq x y))
 
-def extern__shr_int (_ : Unit) : Int :=
-  (Int.shiftr 8 2)
+/-- Type quantifiers: k_n : Int -/
+def neq_bits (x : (BitVec k_n)) (y : (BitVec k_n)) : Bool :=
+  (Bool.not (Eq x y))
 
-def extern_tdiv (_ : Unit) : Int :=
-  (Int.tdiv 5 4)
+/-- Type quantifiers: x : Int -/
+def __id (x : Int) : Int :=
+  x
 
-def extern_tmod (_ : Unit) : Int :=
-  (Int.tmod 5 4)
+/-- Type quantifiers: len : Nat, k_v : Nat, len ≥ 0 ∧ k_v ≥ 0 -/
+def sail_mask (len : Nat) (v : (BitVec k_v)) : (BitVec len) :=
+  if (LE.le len (Sail.BitVec.length v))
+  then (Sail.BitVec.truncate v len)
+  else (Sail.BitVec.zeroExtend v len)
 
-def extern_tmod_positive (_ : Unit) : Int :=
-  (Int.tmod 5 4)
+/-- Type quantifiers: n : Nat, n ≥ 0 -/
+def sail_ones (n : Nat) : (BitVec n) :=
+  (Complement.complement (BitVec.zero n))
 
-def extern_max (_ : Unit) : Int :=
-  (Max.max 5 4)
+/-- Type quantifiers: l : Int, i : Int, n : Nat, n ≥ 0 -/
+def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
+  if (GE.ge l n)
+  then (BitVec.shiftl (BitVec.allOnes n) i)
+  else let one : (BitVec k_n) := (sail_mask n (0b1 : (BitVec 1)))
+       (BitVec.shiftl (HSub.hSub (BitVec.shiftl one l) one) i)
 
-def extern_min (_ : Unit) : Int :=
-  (Min.min 5 4)
+/-- Type quantifiers: n : Int, m : Int -/
+def _shl_int_general (m : Int) (n : Int) : Int :=
+  if (GE.ge n 0)
+  then (Int.shiftl m n)
+  else (Int.shiftr m (Neg.neg n))
 
-def extern_abs_int_plain (_ : Unit) : Int :=
-  let x : Int := (-5)
-  (Sail.Int.intAbs x)
+/-- Type quantifiers: n : Int, m : Int -/
+def _shr_int_general (m : Int) (n : Int) : Int :=
+  if (GE.ge n 0)
+  then (Int.shiftr m n)
+  else (Int.shiftl m (Neg.neg n))
 
-def extern_eq_unit (_ : Unit) : Bool :=
-  (Eq () ())
+/-- Type quantifiers: m : Int, n : Int -/
+def fdiv_int (n : Int) (m : Int) : Int :=
+  if (Bool.and (LT.lt n 0) (GT.gt m 0))
+  then (HSub.hSub (Int.tdiv (HAdd.hAdd n 1) m) 1)
+  else if (Bool.and (GT.gt n 0) (LT.lt m 0))
+       then (HSub.hSub (Int.tdiv (HSub.hSub n 1) m) 1)
+       else (Int.tdiv n m)
 
-def extern_eq_bit (_ : Unit) : Bool :=
-  (Eq 0#1 1#1)
+/-- Type quantifiers: m : Int, n : Int -/
+def fmod_int (n : Int) (m : Int) : Int :=
+  (HSub.hSub n (HMul.hMul m (fdiv_int n m)))
 
-def extern_not (_ : Unit) : Bool :=
-  (Bool.not true)
+/-- Type quantifiers: k_a : Type -/
+def is_none (opt : (Option k_a)) : Bool :=
+  match opt with
+  | some _ => false
+  | none => true
 
-def extern_and (_ : Unit) : Bool :=
-  (Bool.and true false)
+/-- Type quantifiers: k_a : Type -/
+def is_some (opt : (Option k_a)) : Bool :=
+  match opt with
+  | some _ => true
+  | none => false
 
-def extern_and_no_flow (_ : Unit) : Bool :=
-  (Bool.and true false)
+/-- Type quantifiers: k_n : Int -/
+def concat_str_bits (str : String) (x : (BitVec k_n)) : String :=
+  (String.append str (BitVec.toHex x))
 
-def extern_or (_ : Unit) : Bool :=
-  (Bool.or true false)
+/-- Type quantifiers: x : Int -/
+def concat_str_dec (str : String) (x : Int) : String :=
+  (String.append str (Int.repr x))
 
-def extern_eq_bool (_ : Unit) : Bool :=
-  (Eq true false)
+def undefined_cr_type (_ : Unit) : SailM (BitVec 8) := do
+  (undefined_bitvector 8)
 
-def extern_eq_int (_ : Unit) : Bool :=
-  (Eq 5 4)
+def Mk_cr_type (v : (BitVec 8)) : (BitVec 8) :=
+  v
 
-def extern_lteq_int (_ : Unit) : Bool :=
-  (LE.le 5 4)
+def _get_cr_type_bits (v : (BitVec 8)) : (BitVec 8) :=
+  (Sail.BitVec.extractLsb v (HSub.hSub 8 1) 0)
 
-def extern_gteq_int (_ : Unit) : Bool :=
-  (GE.ge 5 4)
+def _update_cr_type_bits (v : (BitVec 8)) (x : (BitVec 8)) : (BitVec 8) :=
+  (Sail.BitVec.updateSubrange v (HSub.hSub 8 1) 0 x)
 
-def extern_lt_int (_ : Unit) : Bool :=
-  (LT.lt 5 4)
+def _set_cr_type_bits (r_ref : (RegisterRef RegisterType (BitVec 8))) (v : (BitVec 8)) : SailM Unit := do
+  let r := (← (reg_deref r_ref))
+  writeRegRef r_ref (_update_cr_type_bits r v)
 
-def extern_gt_int (_ : Unit) : Bool :=
-  (GT.gt 5 4)
+def _get_cr_type_CR0 (v : (BitVec 8)) : (BitVec 4) :=
+  (Sail.BitVec.extractLsb v 7 4)
 
-def extern_eq_anything (_ : Unit) : Bool :=
-  (Eq true true)
+def _update_cr_type_CR0 (v : (BitVec 8)) (x : (BitVec 4)) : (BitVec 8) :=
+  (Sail.BitVec.updateSubrange v 7 4 x)
 
-def extern_vector_update (_ : Unit) : (Vector Int 5) :=
-  (vectorUpdate #v[23, 23, 23, 23, 23] 2 42)
+def _set_cr_type_CR0 (r_ref : (RegisterRef RegisterType (BitVec 8))) (v : (BitVec 4)) : SailM Unit := do
+  let r := (← (reg_deref r_ref))
+  writeRegRef r_ref (_update_cr_type_CR0 r v)
 
-def extern_string_take (_ : Unit) : String :=
-  (String.take "Hello, world" 5)
+def _get_cr_type_CR1 (v : (BitVec 8)) : (BitVec 2) :=
+  (Sail.BitVec.extractLsb v 3 2)
 
-def extern_string_drop (_ : Unit) : String :=
-  (String.drop "Hello, world" 5)
+def _update_cr_type_CR1 (v : (BitVec 8)) (x : (BitVec 2)) : (BitVec 8) :=
+  (Sail.BitVec.updateSubrange v 3 2 x)
 
-def extern_string_length (_ : Unit) : Int :=
-  (String.length "Hello, world")
+def _set_cr_type_CR1 (r_ref : (RegisterRef RegisterType (BitVec 8))) (v : (BitVec 2)) : SailM Unit := do
+  let r := (← (reg_deref r_ref))
+  writeRegRef r_ref (_update_cr_type_CR1 r v)
 
-def extern_string_append (_ : Unit) : String :=
-  (String.append "Hello, " "world")
+def _get_cr_type_CR3 (v : (BitVec 8)) : (BitVec 2) :=
+  (Sail.BitVec.extractLsb v 1 0)
 
-def extern_string_startswith (_ : Unit) : Bool :=
-  (String.startsWith "Hello, world" "Hello")
+def _update_cr_type_CR3 (v : (BitVec 8)) (x : (BitVec 2)) : (BitVec 8) :=
+  (Sail.BitVec.updateSubrange v 1 0 x)
 
-def initialize_registers (_ : Unit) : Unit :=
-  ()
+def _set_cr_type_CR3 (r_ref : (RegisterRef RegisterType (BitVec 8))) (v : (BitVec 2)) : SailM Unit := do
+  let r := (← (reg_deref r_ref))
+  writeRegRef r_ref (_update_cr_type_CR3 r v)
+
+def _get_cr_type_GT (v : (BitVec 8)) : (BitVec 1) :=
+  (Sail.BitVec.extractLsb v 6 6)
+
+def _update_cr_type_GT (v : (BitVec 8)) (x : (BitVec 1)) : (BitVec 8) :=
+  (Sail.BitVec.updateSubrange v 6 6 x)
+
+def _set_cr_type_GT (r_ref : (RegisterRef RegisterType (BitVec 8))) (v : (BitVec 1)) : SailM Unit := do
+  let r := (← (reg_deref r_ref))
+  writeRegRef r_ref (_update_cr_type_GT r v)
+
+def _get_cr_type_LT (v : (BitVec 8)) : (BitVec 1) :=
+  (Sail.BitVec.extractLsb v 7 7)
+
+def _update_cr_type_LT (v : (BitVec 8)) (x : (BitVec 1)) : (BitVec 8) :=
+  (Sail.BitVec.updateSubrange v 7 7 x)
+
+def _set_cr_type_LT (r_ref : (RegisterRef RegisterType (BitVec 8))) (v : (BitVec 1)) : SailM Unit := do
+  let r := (← (reg_deref r_ref))
+  writeRegRef r_ref (_update_cr_type_LT r v)
+
+def initialize_registers (_ : Unit) : SailM Unit := do
+  writeReg R (← (undefined_cr_type ()))
 

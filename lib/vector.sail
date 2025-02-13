@@ -342,18 +342,18 @@ $endif
 
 overload vector_update_subrange = {update_subrange_bits}
 
-val sail_shiftleft = pure "shiftl" : forall 'n ('ord : Order).
+val sail_shiftleft = pure { lean: "BitVec.shiftl", _: "shiftl"} : forall 'n ('ord : Order).
     (bitvector('n, 'ord), int) -> bitvector('n, 'ord)
 
-val sail_shiftright = pure "shiftr" : forall 'n ('ord : Order).
+val sail_shiftright = pure { lean: "BitVec.shiftr", _: "shiftr"} : forall 'n ('ord : Order).
     (bitvector('n, 'ord), int) -> bitvector('n, 'ord)
 
-val sail_arith_shiftright = pure "arith_shiftr" : forall 'n ('ord : Order).
+val sail_arith_shiftright = pure { lean: "BitVec.ashiftr", _: "arith_shiftr" } : forall 'n ('ord : Order).
     (bitvector('n, 'ord), int) -> bitvector('n, 'ord)
 
-val sail_zeros = pure "zeros" : forall 'n, 'n >= 0. int('n) -> bits('n)
+val sail_zeros = pure { lean: "BitVec.zero", _: "zeros"} : forall 'n, 'n >= 0. int('n) -> bits('n)
 
-val sail_ones : forall 'n, 'n >= 0. int('n) -> bits('n)
+val sail_ones = pure { lean: "BitVec.allOnes", _: "ones"} : forall 'n, 'n >= 0. int('n) -> bits('n)
 
 function sail_ones(n) = not_vec(sail_zeros(n))
 

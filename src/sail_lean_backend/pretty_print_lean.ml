@@ -820,7 +820,7 @@ let main_function_stub =
 
 let pp_ast_lean (env : Type_check.env) effect_info ({ defs; _ } as ast : Libsail.Type_check.typed_ast) o =
   (* TODO: remove the following line once we can handle the includes *)
-  let defs = remove_imports defs 0 in
+  (* let defs = remove_imports defs 0 in *)
   let regs = State.find_registers defs in
   let global = { effect_info } in
   let ctx = initial_context env global in
