@@ -11,15 +11,18 @@ open Sail
 structure rectangle where
   width : Int
   height : Int
+  deriving BEq
 
 
 structure circle where
   radius : Int
+  deriving BEq
 
 
 inductive shape where
   | Rectangle (_ : rectangle)
   | Circle (_ : circle)
+  deriving BEq
 
 open shape
 
@@ -28,6 +31,7 @@ open shape
 inductive my_option (k_a : Type) where
   | MySome (_ : k_a)
   | MyNone (_ : Unit)
+  deriving BEq
 
 open my_option
 
@@ -43,13 +47,13 @@ def undefined_circle (_ : Unit) : SailM circle := do
   (pure { radius := (← (undefined_int ())) })
 
 /-- Type quantifiers: k_a : Type -/
-def is_none (opt : my_option k_a) : Bool :=
+def is_none (opt : (my_option k_a)) : Bool :=
   match opt with
   | .MySome _ => false
   | .MyNone () => true
 
 /-- Type quantifiers: k_a : Type -/
-def use_is_none (opt : my_option k_a) : Bool :=
+def use_is_none (opt : (my_option k_a)) : Bool :=
   (is_none opt)
 
 def initialize_registers (_ : Unit) : Unit :=

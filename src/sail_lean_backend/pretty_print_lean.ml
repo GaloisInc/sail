@@ -165,8 +165,7 @@ let rec doc_nexp ctx (Nexp_aux (n, l) as nexp) =
     match n with Nexp_times (n1, n2) -> separate space [mul n1; star; uneg n2] | _ -> uneg nexp
   and uneg (Nexp_aux (n, l) as nexp) =
     match n with Nexp_neg n -> parens (separate space [minus; uneg n]) | _ -> exp nexp
-  and exp (Nexp_aux (n, l) as nexp) =
-    match n with Nexp_exp n -> separate space [string "2"; caret; exp n] | _ -> app nexp
+  and exp (Nexp_aux (n, l) as nexp) = match n with Nexp_exp n -> separate space [string "pow2"; exp n] | _ -> app nexp
   and app (Nexp_aux (n, l) as nexp) =
     match n with
     | Nexp_if (i, t, e) ->
@@ -250,7 +249,7 @@ and doc_typ ctx (Typ_aux (t, _) as typ) =
   | Typ_app (Id_aux (Id "result", _), [A_aux (A_typ typ1, _); A_aux (A_typ typ2, _)]) ->
       parens (separate space [string "Result"; doc_typ ctx typ1; doc_typ ctx typ2])
   | Typ_var kid -> doc_kid ctx kid
-  | Typ_app (id, args) -> doc_id_ctor id ^^ space ^^ separate_map space (doc_typ_arg ctx `Only_relevant) args
+  | Typ_app (id, args) -> parens (doc_id_ctor id ^^ space ^^ separate_map space (doc_typ_arg ctx `Only_relevant) args)
   | Typ_exist (_, _, typ) -> doc_typ ctx typ
   | _ -> failwith ("Type " ^ string_of_typ_con typ ^ " " ^ string_of_typ typ ^ " not translatable yet.")
 
@@ -474,8 +473,12 @@ let rebind_cast_pattern_vars pat typ exp =
   in
   List.fold_left add_lb exp lbs
 
-let wrap_with_pure (needs_return : bool) (d : document) =
-  if needs_return then parens (nest 2 (flow space [string "pure"; d])) else d
+let wrap_with_pure (needs_return : bool) ?(with_parens = false) (d : document) =
+  if needs_return then (
+    let d = if with_parens then parens d else d in
+    parens (nest 2 (flow space [string "pure"; d]))
+  )
+  else d
 
 let wrap_with_left_arrow (needs_return : bool) (d : document) =
   if needs_return then parens (nest 2 (flow space [string "←"; d])) else d
@@ -511,13 +514,12 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
   else (
     let env = env_of_tannot annot in
     let d_of_arg ctx arg =
-      let arg_monadic = effectful (effect_of arg) in
       let wrap =
         match arg with
-        | E_aux (E_let _, _) | E_aux (E_internal_plet _, _) | E_aux (E_if _, _) -> parens
+        | E_aux (E_let _, _) | E_aux (E_internal_plet _, _) | E_aux (E_if _, _) | E_aux (E_match _, _) -> parens
         | _ -> fun x -> x
       in
-      wrap_with_left_arrow arg_monadic (wrap (doc_exp arg_monadic ctx arg))
+      wrap (doc_exp false ctx arg)
     in
     let d_of_field (FE_aux (FE_fexp (field, e), _) as fexp) =
       let field_monadic = effectful (effect_of e) in
@@ -591,7 +593,7 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
             in
             let effects = effectful (effect_of body) in
             let early_return = has_early_return body in
-            let combinator, catch, as_monadic =
+            let combinator, catch, body_as_monadic =
               match (as_monadic && effects, early_return) with
               | true, true -> ("foreach_ME", string "catchEarlyReturn", true)
               | true, false -> ("foreach_M", empty, true)
@@ -609,10 +611,11 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
             let body_lambda = if effects then body_lambda ^^ string " do" else body_lambda in
             (* TODO: this should probably be construct_dep_pairs, but we would need
                to change it to use the updated context. *)
-            let body_pp = doc_exp as_monadic body_ctxt body in
+            let body_pp = doc_exp body_as_monadic body_ctxt body in
             let loop_head = flow (break 1) [string combinator; from_exp_pp; to_exp_pp; step_exp_pp; vartuple_pp] in
             let full_loop = (prefix 2 1) loop_head (parens (prefix 2 1 (group body_lambda) body_pp)) in
-            if early_return then flow (break 1) [catch; parens full_loop] else full_loop
+            let full_loop = if early_return then flow (break 1) [catch; parens full_loop] else full_loop in
+            wrap_with_pure (as_monadic && not (early_return || body_as_monadic)) ~with_parens:true full_loop
         | _ -> raise (Reporting.err_unreachable l __POS__ "Unexpected number of arguments for loop combinator")
       end
     | E_app (f, args) ->
@@ -635,7 +638,7 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
           match typ_of full_exp with
           | Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp m, _)]), _)
           | Typ_aux (Typ_app (Id_aux (Id "bits", _), [A_aux (A_nexp m, _)]), _) ->
-              nest 2 (flow space [string "BitVec.join1"; brackets (separate_map comma_sp (d_of_arg ctx) vals)])
+              nest 2 (parens (flow space [string "BitVec.join1"; brackets (separate_map comma_sp (d_of_arg ctx) vals)]))
           | _ -> string "#v" ^^ wrap_with_pure as_monadic (brackets (nest 2 (separate_map comma_sp (d_of_arg ctx) vals)))
         in
         pp
@@ -672,17 +675,17 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
           (braces (space ^^ doc_exp false ctx exp ^^ string " with " ^^ separate (comma ^^ space) args ^^ space))
     | E_match (discr, brs) ->
         let cases = separate_map hardline (doc_match_clause as_monadic ctx) brs in
-        string (match_or_match_bv brs) ^^ doc_exp false (remove_er ctx) discr ^^ string " with" ^^ hardline ^^ cases
+        string (match_or_match_bv brs) ^^ d_of_arg (remove_er ctx) discr ^^ string " with" ^^ hardline ^^ cases
     | E_assign ((LE_aux (le_act, tannot) as le), e) ->
         wrap_with_left_arrow (not as_monadic)
           ( match le_act with
-          | LE_id id | LE_typ (_, id) -> string "writeReg " ^^ doc_id_ctor id ^^ space ^^ doc_exp false ctx e
-          | LE_deref e' -> string "writeRegRef " ^^ doc_exp false ctx e' ^^ space ^^ doc_exp false ctx e
+          | LE_id id | LE_typ (_, id) -> string "writeReg " ^^ doc_id_ctor id ^^ space ^^ d_of_arg ctx e
+          | LE_deref e' -> string "writeRegRef " ^^ d_of_arg ctx e' ^^ space ^^ d_of_arg ctx e
           | _ -> failwith ("assign " ^ string_of_lexp le ^ "not implemented yet")
           )
     | E_if (i, t, e) ->
         let statements_monadic = as_monadic || effectful (effect_of t) || effectful (effect_of e) in
-        nest 2 (string "if" ^^ space ^^ nest 1 (doc_exp false (remove_er ctx) i))
+        nest 2 (string "if" ^^ space ^^ nest 1 (d_of_arg (remove_er ctx) i))
         ^^ hardline
         ^^ nest 2 (string "then" ^^ space ^^ nest 3 (doc_exp statements_monadic ctx t))
         ^^ hardline
@@ -832,9 +835,7 @@ let doc_typdef ctx (TD_aux (td, tannot) as full_typdef) =
   | TD_enum (id, fields, _) ->
       let fields = List.map doc_id_ctor fields in
       let fields = List.map (fun i -> space ^^ pipe ^^ space ^^ i) fields in
-      let derivers =
-        if List.length fields == 0 then [string "DecidableEq"] else [string "Inhabited"; string "DecidableEq"]
-      in
+      let derivers = if List.length fields == 0 then [string "BEq"] else [string "Inhabited"; string "BEq"] in
       let enums_doc = concat fields in
       let id = doc_id_ctor id in
       nest 2
@@ -850,7 +851,7 @@ let doc_typdef ctx (TD_aux (td, tannot) as full_typdef) =
       doc_typ_quant_in_comment ctx tq ^^ hardline
       ^^ nest 2
            (flow (break 1) (remove_empties [string "structure"; doc_id_ctor id; rectyp; string "where"])
-           ^^ hardline ^^ fields_doc
+           ^^ hardline ^^ fields_doc ^^ hardline ^^ string "deriving BEq"
            )
   | TD_abbrev (id, tq, A_aux (A_typ (Typ_aux (Typ_app (Id_aux (Id "range", _), _), _) as t), _)) ->
       let vars = doc_typ_quant_relevant ctx tq in
@@ -872,7 +873,10 @@ let doc_typdef ctx (TD_aux (td, tannot) as full_typdef) =
       let rectyp = List.map (fun d -> parens d) rectyp |> separate space in
       let id = doc_id_ctor id in
       doc_typ_quant_in_comment ctx tq ^^ hardline
-      ^^ nest 2 (nest 2 (flow space (remove_empties [string "inductive"; id; rectyp; string "where"])) ^^ pp_tus)
+      ^^ nest 2
+           (nest 2 (flow space (remove_empties [string "inductive"; id; rectyp; string "where"]))
+           ^^ pp_tus ^^ hardline ^^ string "deriving BEq"
+           )
       ^^ hardline ^^ hardline
       ^^ flow space [string "open"; id]
   | _ -> failwith ("Type definition " ^ string_of_type_def_con full_typdef ^ " not translatable yet.")
