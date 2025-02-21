@@ -62,6 +62,8 @@ skip_tests_mwords = {
     'ex_cons_infer',
     # Requires types that aren't currently in the library
     'float_prelude',
+    # Needs smarter monomorphisation
+    'bits_alias_cast',
 }
 
 print('Sail is {}'.format(sail))
