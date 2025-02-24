@@ -1225,6 +1225,14 @@ and to_ast_fpat ctx (P.FP_aux (aux, l)) =
   | FP_field (field, pat) -> (to_ast_id ctx field, to_ast_pat ctx pat)
   | FP_wild -> Reporting.unreachable l __POS__ "Unexpected field wildcard"
 
+let rec is_config (P.E_aux (aux, _)) =
+  match aux with
+  | P.E_field (exp, field) -> begin
+      match is_config exp with None -> None | Some key -> Some (string_of_parse_id field :: key)
+    end
+  | P.E_config root -> Some [root]
+  | _ -> None
+
 let rec to_ast_letbind ctx (P.LB_aux (lb, l) : P.letbind) : uannot letbind =
   LB_aux ((match lb with P.LB_val (pat, exp) -> LB_val (to_ast_pat ctx pat, to_ast_exp ctx exp)), (l, empty_uannot))
 
@@ -1303,7 +1311,11 @@ and to_ast_exp ctx exp =
             | Some fexps -> E_struct_update (to_ast_exp ctx exp, fexps)
             | _ -> raise (Reporting.err_unreachable l __POS__ "to_ast_fexps with true returned none")
           )
-        | P.E_field (exp, id) -> E_field (to_ast_exp ctx exp, to_ast_id ctx id)
+        | P.E_field (exp, field) -> (
+            match is_config exp with
+            | None -> E_field (to_ast_exp ctx exp, to_ast_id ctx field)
+            | Some key -> E_config (List.rev (string_of_parse_id field :: key))
+          )
         | P.E_match (exp, pexps) -> E_match (to_ast_exp ctx exp, List.map (to_ast_case ctx) pexps)
         | P.E_try (exp, pexps) -> E_try (to_ast_exp ctx exp, List.map (to_ast_case ctx) pexps)
         | P.E_let (leb, exp) -> E_let (to_ast_letbind ctx leb, to_ast_exp ctx exp)
@@ -1313,6 +1325,7 @@ and to_ast_exp ctx exp =
         | P.E_constraint nc -> E_constraint (to_ast_constraint ctx nc)
         | P.E_exit exp -> E_exit (to_ast_exp ctx exp)
         | P.E_throw exp -> E_throw (to_ast_exp ctx exp)
+        | P.E_config key -> E_config [key]
         | P.E_return exp -> E_return (to_ast_exp ctx exp)
         | P.E_assert (cond, msg) -> E_assert (to_ast_exp ctx cond, to_ast_exp ctx msg)
         | P.E_internal_plet (pat, exp1, exp2) ->
@@ -1676,20 +1689,20 @@ let rec to_ast_typedef ctx def_annot (P.TD_aux (aux, l) : P.type_def) : untyped_
       ( fns @ [DEF_aux (DEF_type (TD_aux (TD_enum (id, enums, false), (l, empty_uannot))), def_annot)],
         { ctx with type_constructors = Bindings.add id ([], P.K_type) ctx.type_constructors }
       )
-  | P.TD_abstract (id, kind) ->
+  | P.TD_abstract (id, kind, instantiation) -> (
       if not !opt_abstract_types then raise (Reporting.err_general l abstract_type_error);
       let id = to_ast_reserved_type_id ctx id in
-      begin
-        match to_ast_kind kind with
-        | Some kind ->
-            ( [DEF_aux (DEF_type (TD_aux (TD_abstract (id, kind), (l, empty_uannot))), def_annot)],
-              {
-                ctx with
-                type_constructors = Bindings.add id ([], to_parse_kind (Some (unaux_kind kind))) ctx.type_constructors;
-              }
-            )
-        | None -> raise (Reporting.err_general l "Abstract type cannot have Order kind")
-      end
+      let instantiation = match instantiation with Some key -> TDC_key key | None -> TDC_none in
+      match to_ast_kind kind with
+      | Some kind ->
+          ( [DEF_aux (DEF_type (TD_aux (TD_abstract (id, kind, instantiation), (l, empty_uannot))), def_annot)],
+            {
+              ctx with
+              type_constructors = Bindings.add id ([], to_parse_kind (Some (unaux_kind kind))) ctx.type_constructors;
+            }
+          )
+      | None -> raise (Reporting.err_general l "Abstract type cannot have Order kind")
+    )
   | P.TD_bitfield (id, typ, ranges) ->
       let id = to_ast_reserved_type_id ctx id in
       let typ = to_ast_typ ctx typ in

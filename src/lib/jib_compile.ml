@@ -121,12 +121,14 @@ type ctx = {
   records : (kid list * ctyp Bindings.t) Bindings.t;
   enums : IdSet.t Bindings.t;
   variants : (kid list * ctyp Bindings.t) Bindings.t;
+  abstracts : ctyp Bindings.t;
   valspecs : (string option * ctyp list * ctyp * uannot) Bindings.t;
   quants : ctyp KBindings.t;
   local_env : Env.t;
   tc_env : Env.t;
   effect_info : Effects.side_effect_info;
   locals : (mut * ctyp) Bindings.t;
+  registers : ctyp Bindings.t;
   letbinds : int list;
   letbind_ids : IdSet.t;
   no_raw : bool;
@@ -168,12 +170,14 @@ let initial_ctx ?for_target env effect_info =
     records = Bindings.empty;
     enums = Bindings.empty;
     variants = Bindings.empty;
+    abstracts = Bindings.empty;
     valspecs = initial_valspecs;
     quants = KBindings.empty;
     local_env = env;
     tc_env = env;
     effect_info;
     locals = Bindings.empty;
+    registers = Bindings.empty;
     letbinds = [];
     letbind_ids = IdSet.empty;
     no_raw = false;
@@ -204,6 +208,8 @@ let rec mangle_string_of_ctyp ctx = function
   | CT_string -> "s"
   | CT_float n -> "f" ^ string_of_int n
   | CT_rounding_mode -> "m"
+  | CT_json -> "j"
+  | CT_json_key -> "k"
   | CT_enum (id, _) -> "E" ^ string_of_id id ^ "%"
   | CT_ref ctyp -> "&" ^ mangle_string_of_ctyp ctx ctyp
   | CT_memory_writes -> "w"
@@ -343,6 +349,15 @@ module Make (C : CONFIG) = struct
       end
     | _ -> []
 
+  let unit_cval = V_lit (VL_unit, CT_unit)
+
+  let get_variable_ctyp id ctx =
+    match Bindings.find_opt id ctx.locals with
+    | Some binding -> Some binding
+    | None -> (
+        match Bindings.find_opt id ctx.registers with Some ctyp -> Some (Mutable, ctyp) | None -> None
+      )
+
   let rec compile_aval l ctx = function
     | AV_cval (cval, typ) ->
         let ctyp = cval_ctyp cval in
@@ -354,7 +369,7 @@ module Make (C : CONFIG) = struct
         else ([], cval, [])
     | AV_id (id, Enum typ) -> ([], V_member (id, ctyp_of_typ ctx typ), [])
     | AV_id (id, typ) -> begin
-        match Bindings.find_opt id ctx.locals with
+        match get_variable_ctyp id ctx with
         | Some (_, ctyp) -> ([], V_id (name id, ctyp), [])
         | None -> ([], V_id (name id, ctyp_of_typ ctx (lvar_typ typ)), [])
       end
@@ -574,7 +589,7 @@ module Make (C : CONFIG) = struct
       optimizations where we can generate a more efficient version of [foo] that doesn't exist
       in the original Sail.
   *)
-  let compile_funcall ?override_id l ctx id args =
+  let compile_funcall_with ?override_id l ctx id compile_arg args =
     let setup = ref [] in
     let cleanup = ref [] in
 
@@ -592,8 +607,8 @@ module Make (C : CONFIG) = struct
 
     let instantiation = ref KBindings.empty in
 
-    let setup_arg ctyp aval =
-      let arg_setup, cval, arg_cleanup = compile_aval l ctx aval in
+    let setup_arg ctyp arg =
+      let arg_setup, cval, arg_cleanup = compile_arg arg in
       instantiation := KBindings.union merge_unifiers (ctyp_unify l ctyp (cval_ctyp cval)) !instantiation;
       setup := List.rev arg_setup @ !setup;
       cleanup := arg_cleanup @ !cleanup;
@@ -615,6 +630,342 @@ module Make (C : CONFIG) = struct
       end,
       !cleanup
     )
+
+  let compile_funcall ?override_id l ctx id args = compile_funcall_with ?override_id l ctx id (compile_aval l ctx) args
+
+  let compile_extern l ctx id args =
+    let setup = ref [] in
+    let cleanup = ref [] in
+
+    let setup_arg aval =
+      let arg_setup, cval, arg_cleanup = compile_aval l ctx aval in
+      setup := List.rev arg_setup @ !setup;
+      cleanup := arg_cleanup @ !cleanup;
+      cval
+    in
+
+    let setup_args = List.map setup_arg args in
+
+    (List.rev !setup, (fun clexp -> iextern l clexp (id, []) setup_args), !cleanup)
+
+  let select_abstract l ctx string_id f =
+    let rec if_chain = function [] -> [] | [(_, e)] -> e | (i, t) :: e -> [iif l i t (if_chain e)] in
+    Bindings.bindings ctx.abstracts
+    |> List.map (fun (id, ctyp) ->
+           (V_call (String_eq, [V_id (string_id, CT_string); V_lit (VL_string (string_of_id id), CT_string)]), f id ctyp)
+       )
+    |> if_chain
+
+  let compile_config' l ctx key ctyp =
+    let key_name = ngensym () in
+    let json = ngensym () in
+    let args = [V_lit (VL_int (Big_int.of_int (List.length key)), CT_fint 64); V_id (key_name, CT_json_key)] in
+    let init =
+      [
+        ijson_key l key_name key;
+        idecl l CT_json json;
+        iextern l (CL_id (json, CT_json)) (mk_id "sail_config_get", []) args;
+      ]
+    in
+
+    let config_extract ctyp json ~validate ~extract =
+      let valid = ngensym () in
+      let value = ngensym () in
+      ( [
+          idecl l CT_bool valid;
+          iextern l (CL_id (valid, CT_bool)) (mk_id (fst validate), []) ([V_id (json, CT_json)] @ snd validate);
+          iif l (V_call (Bnot, [V_id (valid, CT_bool)])) [ibad_config l] [];
+          idecl l ctyp value;
+          iextern l (CL_id (value, ctyp)) (mk_id extract, []) [V_id (json, CT_json)];
+        ],
+        (fun clexp -> icopy l clexp (V_id (value, ctyp))),
+        [iclear ctyp value]
+      )
+    in
+
+    let config_extract_bits ctyp json =
+      let value = ngensym () in
+      let is_abstract = ngensym () in
+      let abstract_name = ngensym () in
+      let setup, non_abstract_call, cleanup =
+        config_extract ctyp json ~validate:("sail_config_is_bits", []) ~extract:"sail_config_unwrap_bits"
+      in
+      ( [
+          idecl l CT_bool is_abstract;
+          iextern l (CL_id (is_abstract, CT_bool)) (mk_id "sail_config_is_bits_abstract", []) [V_id (json, CT_json)];
+          idecl l ctyp value;
+          iif l
+            (V_id (is_abstract, CT_bool))
+            ([
+               idecl l CT_string abstract_name;
+               iextern l
+                 (CL_id (abstract_name, CT_string))
+                 (mk_id "sail_config_bits_abstract_len", [])
+                 [V_id (json, CT_json)];
+             ]
+            @ select_abstract l ctx abstract_name (fun id abstract_ctyp ->
+                  match abstract_ctyp with
+                  | CT_fint 64 ->
+                      [
+                        iextern l
+                          (CL_id (value, ctyp))
+                          (mk_id "sail_config_unwrap_abstract_bits", [])
+                          [V_call (Get_abstract, [V_id (name id, abstract_ctyp)]); V_id (json, CT_json)];
+                      ]
+                  | CT_lint | CT_fint _ ->
+                      let len = ngensym () in
+                      [
+                        iinit l (CT_fint 64) len (V_call (Get_abstract, [V_id (name id, abstract_ctyp)]));
+                        iextern l
+                          (CL_id (value, ctyp))
+                          (mk_id "sail_config_unwrap_abstract_bits", [])
+                          [V_id (len, CT_fint 64); V_id (json, CT_json)];
+                      ]
+                  | _ -> []
+              )
+            @ [iclear CT_string abstract_name]
+            )
+            (setup @ [non_abstract_call (CL_id (value, ctyp))] @ cleanup);
+        ],
+        (fun clexp -> icopy l clexp (V_id (value, ctyp))),
+        [iclear ctyp value]
+      )
+    in
+
+    let rec extract json = function
+      | CT_string ->
+          config_extract CT_string json ~validate:("sail_config_is_string", []) ~extract:"sail_config_unwrap_string"
+      | CT_unit -> ([], (fun clexp -> icopy l clexp unit_cval), [])
+      | CT_lint -> config_extract CT_lint json ~validate:("sail_config_is_int", []) ~extract:"sail_config_unwrap_int"
+      | CT_fint _ -> config_extract CT_lint json ~validate:("sail_config_is_int", []) ~extract:"sail_config_unwrap_int"
+      | CT_lbits -> config_extract_bits CT_lbits json
+      | CT_sbits _ -> config_extract_bits CT_lbits json
+      | CT_fbits _ -> config_extract_bits CT_lbits json
+      | CT_bit -> config_extract CT_lbits json ~validate:("sail_config_is_bool", []) ~extract:"sail_config_unwrap_bit"
+      | CT_bool -> config_extract CT_bool json ~validate:("sail_config_is_bool", []) ~extract:"sail_config_unwrap_bool"
+      | CT_enum (_, members) as enum_ctyp ->
+          let enum_name = ngensym () in
+          let enum_str = ngensym () in
+          let setup, get_string, cleanup =
+            config_extract CT_string json ~validate:("sail_config_is_string", []) ~extract:"sail_config_unwrap_string"
+          in
+          let enum_compare =
+            List.fold_left
+              (fun rest m ->
+                [
+                  iif l
+                    (V_call (String_eq, [V_id (enum_str, CT_string); V_lit (VL_string (string_of_id m), CT_string)]))
+                    [icopy l (CL_id (enum_name, enum_ctyp)) (V_member (m, enum_ctyp))]
+                    rest;
+                ]
+              )
+              [] members
+          in
+          ( [idecl l enum_ctyp enum_name; idecl l CT_string enum_str]
+            @ setup
+            @ [get_string (CL_id (enum_str, CT_string))]
+            @ enum_compare,
+            (fun clexp -> icopy l clexp (V_id (enum_name, enum_ctyp))),
+            cleanup @ [iclear CT_string enum_str; iclear enum_ctyp enum_name]
+          )
+      | CT_variant (_, constructors) as variant_ctyp ->
+          let variant_name = ngensym () in
+          let ctor_checks, ctor_extracts =
+            Util.fold_left_map
+              (fun checks (ctor_id, ctyp) ->
+                let is_ctor = ngensym () in
+                let ctor_json = ngensym () in
+                let value = ngensym () in
+                let check =
+                  [
+                    idecl l CT_bool is_ctor;
+                    iextern l
+                      (CL_id (is_ctor, CT_bool))
+                      (mk_id "sail_config_object_has_key", [])
+                      [V_id (json, CT_json); V_lit (VL_string (string_of_id ctor_id), CT_string)];
+                  ]
+                in
+                let setup, call, cleanup = extract ctor_json ctyp in
+                let ctor_setup, ctor_call, ctor_cleanup =
+                  compile_funcall_with l ctx ctor_id (fun cval -> ([], cval, [])) [V_id (value, ctyp)]
+                in
+                let extract =
+                  [
+                    idecl l CT_json ctor_json;
+                    idecl l ctyp value;
+                    iextern l
+                      (CL_id (ctor_json, CT_json))
+                      (mk_id "sail_config_object_key", [])
+                      [V_id (json, CT_json); V_lit (VL_string (string_of_id ctor_id), CT_string)];
+                  ]
+                  @ setup @ ctor_setup
+                  @ [call (CL_id (value, ctyp))]
+                  @ [ctor_call (CL_id (variant_name, variant_ctyp))]
+                  @ ctor_cleanup @ cleanup
+                in
+                (checks @ check, (is_ctor, extract))
+              )
+              [] constructors
+          in
+          let ctor_extracts =
+            List.fold_left (fun rest (b, instrs) -> [iif l (V_id (b, CT_bool)) instrs rest]) [] ctor_extracts
+          in
+          ( [idecl l variant_ctyp variant_name] @ ctor_checks @ ctor_extracts,
+            (fun clexp -> icopy l clexp (V_id (variant_name, variant_ctyp))),
+            [iclear variant_ctyp variant_name]
+          )
+      | CT_struct (_, fields) as struct_ctyp ->
+          let struct_name = ngensym () in
+          let fields_from_json =
+            List.map
+              (fun (field_id, field_ctyp) ->
+                let field_json = ngensym () in
+                let setup, call, cleanup = extract field_json field_ctyp in
+                [
+                  idecl l CT_json field_json;
+                  iextern l
+                    (CL_id (field_json, CT_json))
+                    (mk_id "sail_config_object_key", [])
+                    [V_id (json, CT_json); V_lit (VL_string (string_of_id field_id), CT_string)];
+                ]
+                @ setup
+                @ [call (CL_field (CL_id (struct_name, struct_ctyp), field_id))]
+                @ cleanup
+                @ [iclear CT_json field_json]
+              )
+              fields
+            |> List.concat
+          in
+          ( [idecl l struct_ctyp struct_name] @ fields_from_json,
+            (fun clexp -> icopy l clexp (V_id (struct_name, struct_ctyp))),
+            [iclear struct_ctyp struct_name]
+          )
+      | CT_vector item_ctyp ->
+          let vec = ngensym () in
+          let len = ngensym () in
+          let n = ngensym () in
+          let item_json = ngensym () in
+          let item = ngensym () in
+          let loop = label "config_vector_" in
+          let index =
+            V_call
+              ( Isub,
+                [
+                  V_id (len, CT_fint 64);
+                  V_call (Iadd, [V_id (n, CT_fint 64); V_lit (VL_int (Big_int.of_int 1), CT_fint 64)]);
+                ]
+              )
+          in
+          let setup, call, cleanup = extract item_json item_ctyp in
+          ( [
+              idecl l (CT_fint 64) len;
+              iextern l (CL_id (len, CT_bool)) (mk_id "sail_config_list_length", []) [V_id (json, CT_json)];
+              iif l
+                (V_call (Eq, [V_id (len, CT_fint 64); V_lit (VL_int (Big_int.of_int (-1)), CT_fint 64)]))
+                [ibad_config l]
+                [];
+              idecl l (CT_vector item_ctyp) vec;
+              iextern l (CL_id (vec, CT_vector item_ctyp)) (mk_id "internal_vector_init", []) [V_id (len, CT_fint 64)];
+              iinit l (CT_fint 64) n (V_lit (VL_int Big_int.zero, CT_fint 64));
+              ilabel loop;
+              idecl l CT_json item_json;
+              iextern l
+                (CL_id (item_json, CT_json))
+                (mk_id "sail_config_list_nth", [])
+                [V_id (json, CT_json); V_id (n, CT_fint 64)];
+              idecl l item_ctyp item;
+            ]
+            @ setup
+            @ [
+                call (CL_id (item, item_ctyp));
+                iextern l
+                  (CL_id (vec, CT_vector item_ctyp))
+                  (mk_id "internal_vector_update", [])
+                  [V_id (vec, CT_vector item_ctyp); index; V_id (item, item_ctyp)];
+              ]
+            @ cleanup
+            @ [
+                iclear item_ctyp item;
+                iclear CT_json item_json;
+                icopy l
+                  (CL_id (n, CT_fint 64))
+                  (V_call (Iadd, [V_id (n, CT_fint 64); V_lit (VL_int (Big_int.of_int 1), CT_fint 64)]));
+                ijump l (V_call (Ilt, [V_id (n, CT_fint 64); V_id (len, CT_fint 64)])) loop;
+              ],
+            (fun clexp -> icopy l clexp (V_id (vec, CT_vector item_ctyp))),
+            [iclear (CT_vector item_ctyp) vec]
+          )
+      | CT_list item_ctyp ->
+          let list = ngensym () in
+          let len = ngensym () in
+          let n = ngensym () in
+          let item_json = ngensym () in
+          let item = ngensym () in
+          let loop_start = label "config_list_start_" in
+          let loop_end = label "config_list_end_" in
+          let index =
+            V_call
+              ( Isub,
+                [
+                  V_id (len, CT_fint 64);
+                  V_call (Iadd, [V_id (n, CT_fint 64); V_lit (VL_int (Big_int.of_int 1), CT_fint 64)]);
+                ]
+              )
+          in
+          let setup, call, cleanup = extract item_json item_ctyp in
+          ( [
+              idecl l (CT_fint 64) len;
+              iextern l (CL_id (len, CT_bool)) (mk_id "sail_config_list_length", []) [V_id (json, CT_json)];
+              iif l
+                (V_call (Eq, [V_id (len, CT_fint 64); V_lit (VL_int (Big_int.of_int (-1)), CT_fint 64)]))
+                [ibad_config l]
+                [];
+              idecl l (CT_list item_ctyp) list;
+              iinit l (CT_fint 64) n (V_lit (VL_int Big_int.zero, CT_fint 64));
+              ilabel loop_start;
+              ijump l (V_call (Igteq, [V_id (n, CT_fint 64); V_id (len, CT_fint 64)])) loop_end;
+              idecl l CT_json item_json;
+              iextern l (CL_id (item_json, CT_json)) (mk_id "sail_config_list_nth", []) [V_id (json, CT_json); index];
+              idecl l item_ctyp item;
+            ]
+            @ setup
+            @ [
+                call (CL_id (item, item_ctyp));
+                iextern l
+                  (CL_id (list, CT_list item_ctyp))
+                  (mk_id "sail_cons", [])
+                  [V_id (item, item_ctyp); V_id (list, CT_list item_ctyp)];
+              ]
+            @ cleanup
+            @ [
+                iclear item_ctyp item;
+                iclear CT_json item_json;
+                icopy l
+                  (CL_id (n, CT_fint 64))
+                  (V_call (Iadd, [V_id (n, CT_fint 64); V_lit (VL_int (Big_int.of_int 1), CT_fint 64)]));
+                igoto loop_start;
+                ilabel loop_end;
+              ],
+            (fun clexp -> icopy l clexp (V_id (list, CT_list item_ctyp))),
+            [iclear (CT_list item_ctyp) list]
+          )
+      | _ -> Reporting.unreachable l __POS__ "Invalid configuration type"
+    in
+
+    let setup, call, cleanup = extract json ctyp in
+    (init @ setup, call, cleanup @ [iclear CT_json json; iclear CT_json_key key_name])
+
+  let compile_config l ctx args typ =
+    let ctyp = ctyp_of_typ ctx typ in
+    let key =
+      List.map
+        (function
+          | AV_lit (L_aux (L_string part, _), _) -> part
+          | _ -> Reporting.unreachable l __POS__ "Invalid argument when compiling config key"
+          )
+        args
+    in
+    compile_config' l ctx key ctyp
 
   let rec apat_ctyp ctx (AP_aux (apat, { env; _ })) =
     let ctx = { ctx with local_env = env } in
@@ -729,15 +1080,13 @@ module Make (C : CONFIG) = struct
       end
     | AP_nil _ -> ([on_failure l (V_call (Bnot, [V_call (List_is_empty, [cval])]))], [], [], ctx)
 
-  let unit_cval = V_lit (VL_unit, CT_unit)
-
   let rec compile_alexp ctx alexp =
     match alexp with
     | AL_id (id, typ) ->
-        let ctyp = match Bindings.find_opt id ctx.locals with Some (_, ctyp) -> ctyp | None -> ctyp_of_typ ctx typ in
+        let ctyp = match get_variable_ctyp id ctx with Some (_, ctyp) -> ctyp | None -> ctyp_of_typ ctx typ in
         CL_id (name id, ctyp)
     | AL_addr (id, typ) ->
-        let ctyp = match Bindings.find_opt id ctx.locals with Some (_, ctyp) -> ctyp | None -> ctyp_of_typ ctx typ in
+        let ctyp = match get_variable_ctyp id ctx with Some (_, ctyp) -> ctyp | None -> ctyp_of_typ ctx typ in
         CL_addr (CL_id (name id, ctyp))
     | AL_field (alexp, field_id) -> CL_field (compile_alexp ctx alexp, field_id)
 
@@ -777,13 +1126,16 @@ module Make (C : CONFIG) = struct
         let ctx = { ctx with locals = Bindings.add id (mut, binding_ctyp) ctx.locals } in
         let setup, call, cleanup = compile_aexp ctx body in
         (letb_setup @ setup, call, cleanup @ letb_cleanup)
-    | AE_app (id, vs, _) ->
+    | AE_app (Sail_function id, vs, _) ->
         if Option.is_some (get_attribute "mapping_guarded" uannot) then (
           let override_id = append_id id "_infallible" in
           if Bindings.mem override_id ctx.valspecs then compile_funcall ~override_id l ctx id vs
           else compile_funcall l ctx id vs
         )
         else compile_funcall l ctx id vs
+    | AE_app (Pure_extern id, args, _) -> compile_extern l ctx id args
+    | AE_app (Extern id, args, typ) ->
+        if string_of_id id = "sail_config_get" then compile_config l ctx args typ else compile_extern l ctx id args
     | AE_val aval ->
         let setup, cval, cleanup = compile_aval l ctx aval in
         (setup, (fun clexp -> icopy l clexp cval), cleanup)
@@ -889,9 +1241,7 @@ module Make (C : CONFIG) = struct
                     guard_setup
                     @ [idecl l CT_bool gs; guard_call (CL_id (gs, CT_bool))]
                     @ guard_cleanup
-                    @ [
-                        iif l (V_call (Bnot, [V_id (gs, CT_bool)])) (destructure_cleanup @ [igoto case_label]) [] CT_unit;
-                      ]
+                    @ [iif l (V_call (Bnot, [V_id (gs, CT_bool)])) (destructure_cleanup @ [igoto case_label]) []]
                   else []
                 )
               @ (if num_cases > 1 then coverage_branch_target_taken ctx branch_id body else [])
@@ -999,7 +1349,7 @@ module Make (C : CONFIG) = struct
             ( setup,
               (fun clexp ->
                 append_into_block on_reached
-                  (iif l cval (compile_branch then_aexp clexp) (compile_branch else_aexp clexp) if_ctyp)
+                  (iif l cval (compile_branch then_aexp clexp) (compile_branch else_aexp clexp))
               ),
               cleanup
             )
@@ -1050,8 +1400,7 @@ module Make (C : CONFIG) = struct
                 idecl l CT_bool gs;
                 iif l cval
                   (right_coverage @ right_setup @ [call (CL_id (gs, CT_bool))] @ right_cleanup)
-                  [icopy l (CL_id (gs, CT_bool)) (V_lit (VL_bool false, CT_bool))]
-                  CT_bool;
+                  [icopy l (CL_id (gs, CT_bool)) (V_lit (VL_bool false, CT_bool))];
               ]
             @ left_cleanup,
             (fun clexp -> icopy l clexp (V_id (gs, CT_bool))),
@@ -1081,8 +1430,7 @@ module Make (C : CONFIG) = struct
                 idecl l CT_bool gs;
                 iif l cval
                   [icopy l (CL_id (gs, CT_bool)) (V_lit (VL_bool true, CT_bool))]
-                  (right_coverage @ right_setup @ [call (CL_id (gs, CT_bool))] @ right_cleanup)
-                  CT_bool;
+                  (right_coverage @ right_setup @ [call (CL_id (gs, CT_bool))] @ right_cleanup);
               ]
             @ left_cleanup,
             (fun clexp -> icopy l clexp (V_id (gs, CT_bool))),
@@ -1366,12 +1714,21 @@ module Make (C : CONFIG) = struct
     | TD_bitfield _ -> Reporting.unreachable l __POS__ "Cannot compile TD_bitfield"
     (* All type abbreviations are filtered out in compile_def  *)
     | TD_abbrev _ -> Reporting.unreachable l __POS__ "Found TD_abbrev in compile_type_def"
-    | TD_abstract (id, K_aux (kind, _)) -> begin
+    | TD_abstract (id, K_aux (kind, _), inst) -> begin
+        let compile_inst ctyp = function
+          | TDC_key key ->
+              let setup, call, cleanup = compile_config' l ctx key ctyp in
+              CTDI_instrs (setup @ [call (CL_id (name id, ctyp))] @ cleanup)
+          | TDC_none -> CTDI_none
+        in
         match kind with
         | K_int ->
             let ctyp = ctyp_of_typ ctx (atom_typ (nid id)) in
-            (CTD_abstract (id, ctyp), ctx)
-        | K_bool -> (CTD_abstract (id, CT_bool), ctx)
+            let inst = compile_inst ctyp inst in
+            (CTD_abstract (id, ctyp, inst), { ctx with abstracts = Bindings.add id ctyp ctx.abstracts })
+        | K_bool ->
+            let inst = compile_inst CT_bool inst in
+            (CTD_abstract (id, CT_bool, inst), { ctx with abstracts = Bindings.add id CT_bool ctx.abstracts })
         | _ -> Reporting.unreachable l __POS__ "Found abstract type that was neither an integer nor a boolean"
       end
 
@@ -1402,10 +1759,10 @@ module Make (C : CONFIG) = struct
       | instrs, [] -> instrs
       | before, I_aux (I_block instrs, _) :: after ->
           before @ [iblock (rewrite_exception (historic @ before) instrs)] @ rewrite_exception (historic @ before) after
-      | before, I_aux (I_if (cval, then_instrs, else_instrs, ctyp), (_, l)) :: after ->
+      | before, I_aux (I_if (cval, then_instrs, else_instrs), (_, l)) :: after ->
           let historic = historic @ before in
           before
-          @ [iif l cval (rewrite_exception historic then_instrs) (rewrite_exception historic else_instrs) ctyp]
+          @ [iif l cval (rewrite_exception historic then_instrs) (rewrite_exception historic else_instrs)]
           @ rewrite_exception historic after
       | before, I_aux (I_throw cval, (_, l)) :: after ->
           before
@@ -1436,7 +1793,7 @@ module Make (C : CONFIG) = struct
                 iif l
                   (V_id (have_exception, CT_bool))
                   (generate_cleanup (historic @ before) @ [igoto end_block_label])
-                  [] CT_unit;
+                  [];
               ]
             @ rewrite_exception (historic @ before) after
           else before @ (funcall :: rewrite_exception (historic @ before) after)
@@ -1450,8 +1807,8 @@ module Make (C : CONFIG) = struct
     let instr =
       match instr with
       | I_decl _ | I_reset _ | I_init _ | I_reinit _ -> instr
-      | I_if (cval, instrs1, instrs2, ctyp) ->
-          I_if (cval, List.map (map_try_block f) instrs1, List.map (map_try_block f) instrs2, ctyp)
+      | I_if (cval, instrs1, instrs2) ->
+          I_if (cval, List.map (map_try_block f) instrs1, List.map (map_try_block f) instrs2)
       | I_funcall _ | I_copy _ | I_clear _ | I_throw _ | I_return _ -> instr
       | I_block instrs -> I_block (List.map (map_try_block f) instrs)
       | I_try_block instrs -> I_try_block (f (List.map (map_try_block f) instrs))
@@ -1527,10 +1884,10 @@ module Make (C : CONFIG) = struct
           before @ [itry_block l (rewrite_return (historic @ before) instrs)] @ rewrite_return (historic @ before) after
       | before, I_aux (I_block instrs, _) :: after ->
           before @ [iblock (rewrite_return (historic @ before) instrs)] @ rewrite_return (historic @ before) after
-      | before, I_aux (I_if (cval, then_instrs, else_instrs, ctyp), (_, l)) :: after ->
+      | before, I_aux (I_if (cval, then_instrs, else_instrs), (_, l)) :: after ->
           let historic = historic @ before in
           before
-          @ [iif l cval (rewrite_return historic then_instrs) (rewrite_return historic else_instrs) ctyp]
+          @ [iif l cval (rewrite_return historic then_instrs) (rewrite_return historic else_instrs)]
           @ rewrite_return historic after
       | before, I_aux (I_return cval, (_, l)) :: after ->
           let cleanup_label = label "cleanup_" in
@@ -1580,11 +1937,11 @@ module Make (C : CONFIG) = struct
           let block', seen = opt seen block in
           let instrs', seen = opt seen instrs in
           (I_aux (I_try_block block', aux) :: instrs', seen)
-      | I_aux (I_if (cval, then_instrs, else_instrs, ctyp), aux) :: instrs ->
+      | I_aux (I_if (cval, then_instrs, else_instrs), aux) :: instrs ->
           let then_instrs', seen = opt seen then_instrs in
           let else_instrs', seen = opt seen else_instrs in
           let instrs', seen = opt seen instrs in
-          (I_aux (I_if (cval, then_instrs', else_instrs', ctyp), aux) :: instrs', seen)
+          (I_aux (I_if (cval, then_instrs', else_instrs'), aux) :: instrs', seen)
       | instr :: instrs ->
           let instrs', seen = opt seen instrs in
           (instr :: instrs', seen)
@@ -1748,13 +2105,19 @@ module Make (C : CONFIG) = struct
     let ctx = { ctx with def_annot = Some def_annot } in
     match aux with
     | DEF_register (DEC_aux (DEC_reg (typ, id, None), _)) ->
-        ([CDEF_aux (CDEF_register (id, ctyp_of_typ ctx typ, []), def_annot)], ctx)
+        let ctyp = ctyp_of_typ ctx typ in
+        ( [CDEF_aux (CDEF_register (id, ctyp, []), def_annot)],
+          { ctx with registers = Bindings.add id ctyp ctx.registers }
+        )
     | DEF_register (DEC_aux (DEC_reg (typ, id, Some exp), _)) ->
+        let ctyp = ctyp_of_typ ctx typ in
         let aexp = C.optimize_anf ctx (no_shadow ctx.letbind_ids (anf exp)) in
         let setup, call, cleanup = compile_aexp ctx aexp in
-        let instrs = setup @ [call (CL_id (name id, ctyp_of_typ ctx typ))] @ cleanup in
+        let instrs = setup @ [call (CL_id (name id, ctyp))] @ cleanup in
         let instrs = unique_names instrs in
-        ([CDEF_aux (CDEF_register (id, ctyp_of_typ ctx typ, instrs), def_annot)], ctx)
+        ( [CDEF_aux (CDEF_register (id, ctyp, instrs), def_annot)],
+          { ctx with registers = Bindings.add id ctyp ctx.registers }
+        )
     | DEF_val (VS_aux (VS_val_spec (_, id, ext), _)) ->
         let quant, Typ_aux (fn_typ, _) = Env.get_val_spec id ctx.tc_env in
         let extern =
@@ -1823,6 +2186,8 @@ module Make (C : CONFIG) = struct
     | DEF_pragma ("abstract", Pragma_line (id_str, _)) -> ([CDEF_aux (CDEF_pragma ("abstract", id_str), def_annot)], ctx)
     | DEF_pragma ("c_in_main", Pragma_line (source, _)) ->
         ([CDEF_aux (CDEF_pragma ("c_in_main", source), def_annot)], ctx)
+    | DEF_pragma ("c_in_main_post", Pragma_line (source, _)) ->
+        ([CDEF_aux (CDEF_pragma ("c_in_main_post", source), def_annot)], ctx)
     (* We just ignore any pragmas we don't want to deal with. *)
     | DEF_pragma _ -> ([], ctx)
     (* Termination measures only needed for Coq, and other theorem prover output *)
@@ -2276,31 +2641,31 @@ module Make (C : CONFIG) = struct
 
     let precise_call call tail =
       match call with
-      | I_aux (I_funcall (CR_one clexp, extern, (id, ctyp_args), args), ((_, l) as aux)) as instr -> begin
+      | I_aux (I_funcall (CR_one clexp, true, (id, _), args), ((_, l) as aux)) as instr ->
+          if string_of_id id = "sail_cons" then (
+            match args with
+            | [hd_arg; tl_arg] ->
+                let ctyp_arg = ctyp_suprema (cval_ctyp hd_arg) in
+                if not (ctyp_equal (cval_ctyp hd_arg) ctyp_arg) then (
+                  let gs = ngensym () in
+                  let cast = [idecl l ctyp_arg gs; icopy l (CL_id (gs, ctyp_arg)) hd_arg] in
+                  let cleanup = [iclear ~loc:l ctyp_arg gs] in
+                  [
+                    iblock
+                      (cast
+                      @ [I_aux (I_funcall (CR_one clexp, true, (id, []), [V_id (gs, ctyp_arg); tl_arg]), aux)]
+                      @ tail @ cleanup
+                      );
+                  ]
+                )
+                else instr :: tail
+            | _ ->
+                (* cons must have two arguments *)
+                Reporting.unreachable (id_loc id) __POS__ "Invalid cons call"
+          )
+          else instr :: tail
+      | I_aux (I_funcall (CR_one clexp, false, (id, ctyp_args), args), ((_, l) as aux)) as instr -> begin
           match get_function_typ id with
-          | None when string_of_id id = "sail_cons" -> begin
-              match (ctyp_args, args) with
-              | [ctyp_arg], [hd_arg; tl_arg] ->
-                  if not (ctyp_equal (cval_ctyp hd_arg) ctyp_arg) then (
-                    let gs = ngensym () in
-                    let cast = [idecl l ctyp_arg gs; icopy l (CL_id (gs, ctyp_arg)) hd_arg] in
-                    let cleanup = [iclear ~loc:l ctyp_arg gs] in
-                    [
-                      iblock
-                        (cast
-                        @ [
-                            I_aux (I_funcall (CR_one clexp, extern, (id, ctyp_args), [V_id (gs, ctyp_arg); tl_arg]), aux);
-                          ]
-                        @ tail @ cleanup
-                        );
-                    ]
-                  )
-                  else instr :: tail
-              | _ ->
-                  (* cons must have a single type parameter and two arguments *)
-                  Reporting.unreachable (id_loc id) __POS__ "Invalid cons call"
-            end
-          | None -> instr :: tail
           | Some (param_ctyps, ret_ctyp) when C.make_call_precise ctx id param_ctyps ret_ctyp ->
               if List.compare_lengths args param_ctyps <> 0 then
                 Reporting.unreachable (id_loc id) __POS__
@@ -2334,11 +2699,12 @@ module Make (C : CONFIG) = struct
               [
                 iblock1
                   (casts @ ret_setup
-                  @ [I_aux (I_funcall (CR_one clexp, extern, (id, ctyp_args), args), aux)]
+                  @ [I_aux (I_funcall (CR_one clexp, false, (id, ctyp_args), args), aux)]
                   @ tail @ ret_cleanup @ cleanup
                   );
               ]
           | Some _ -> instr :: tail
+          | None -> instr :: tail
         end
       | instr -> instr :: tail
     in
@@ -2367,7 +2733,7 @@ module Make (C : CONFIG) = struct
     let cdefs = List.filter (fun cdef -> not (is_ctype_def cdef)) cdefs in
 
     let ctdef_id = function
-      | CTD_abstract (id, _) | CTD_enum (id, _) | CTD_struct (id, _) | CTD_variant (id, _) -> id
+      | CTD_abstract (id, _, _) | CTD_enum (id, _) | CTD_struct (id, _) | CTD_variant (id, _) -> id
     in
 
     let ctdef_ids = function
@@ -2466,13 +2832,3 @@ module Make (C : CONFIG) = struct
     let cdefs = sort_ctype_defs false cdefs in
     (cdefs, ctx)
 end
-
-let add_special_functions env effect_info =
-  let assert_vs = Initial_check.extern_of_string (mk_id "sail_assert") "(bool, string) -> unit" in
-  let exit_vs = Initial_check.extern_of_string (mk_id "sail_exit") "unit -> unit" in
-  let cons_vs = Initial_check.extern_of_string (mk_id "sail_cons") "forall ('a : Type). ('a, list('a)) -> list('a)" in
-
-  let effect_info = Effects.add_monadic_built_in (mk_id "sail_assert") effect_info in
-  let effect_info = Effects.add_monadic_built_in (mk_id "sail_exit") effect_info in
-
-  (snd (Type_error.check_defs env [assert_vs; exit_vs; cons_vs]), effect_info)

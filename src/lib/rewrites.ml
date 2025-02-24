@@ -1986,7 +1986,7 @@ let rewrite_type_union_typs rw_typ (Tu_aux (Tu_ty_id (typ, id), annot)) = Tu_aux
 
 let rewrite_type_def_typs rw_typ rw_typquant (TD_aux (td, annot)) =
   match td with
-  | TD_abstract (id, kind) -> TD_aux (TD_abstract (id, kind), annot)
+  | TD_abstract (id, kind, instantiation) -> TD_aux (TD_abstract (id, kind, instantiation), annot)
   | TD_abbrev (id, typq, A_aux (A_typ typ, l)) ->
       TD_aux (TD_abbrev (id, rw_typquant typq, A_aux (A_typ (rw_typ typ), l)), annot)
   | TD_abbrev (id, typq, typ_arg) -> TD_aux (TD_abbrev (id, rw_typquant typq, typ_arg), annot)
@@ -2324,9 +2324,10 @@ let rewrite_ast_letbind_effects effect_info env =
     let pure_rewrap e = purify (rewrap e) in
     match exp_aux with
     | E_block es -> failwith "E_block should have been removed till now"
-    | E_id id -> k exp
-    | E_ref id -> k exp
+    | E_id _ -> k exp
+    | E_ref _ -> k exp
     | E_lit _ -> k exp
+    | E_config _ -> k exp
     | E_typ (typ, exp') -> n_exp_name exp' (fun exp' -> k (pure_rewrap (E_typ (typ, exp'))))
     | E_app (op_bool, [l; r]) when string_of_id op_bool = "and_bool" || string_of_id op_bool = "or_bool" ->
         (* Leave effectful operands of Boolean "and"/"or" in place to allow

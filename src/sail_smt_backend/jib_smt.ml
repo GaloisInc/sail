@@ -327,21 +327,12 @@ module Make (Config : CONFIG) = struct
             let* l = Smt_gen.current_location in
             Reporting.unreachable l __POS__ ("No registers with ctyp: " ^ string_of_ctyp ctyp)
       end
-    | CT_list _ ->
+    | CT_list _ | CT_float _ ->
         let* l = Smt_gen.current_location in
-        raise (Reporting.err_todo l "Lists not yet supported in SMT generation")
-    | CT_float _ | CT_rounding_mode ->
+        raise (Reporting.err_todo l "Lists and floats not yet supported in SMT generation")
+    | (CT_rounding_mode | CT_tup _ | CT_poly _ | CT_memory_writes | CT_json | CT_json_key) as ctyp ->
         let* l = Smt_gen.current_location in
-        Reporting.unreachable l __POS__ "Floating point in SMT property"
-    | CT_tup _ ->
-        let* l = Smt_gen.current_location in
-        Reporting.unreachable l __POS__ "Tuples should be re-written before SMT generation"
-    | CT_poly _ ->
-        let* l = Smt_gen.current_location in
-        Reporting.unreachable l __POS__ "Found polymorphic type in SMT property"
-    | CT_memory_writes ->
-        let* l = Smt_gen.current_location in
-        Reporting.unreachable l __POS__ "Found memory writes type in SMT property"
+        ksprintf (Reporting.unreachable l __POS__) "Found unsupported type %s in SMT generation" (string_of_ctyp ctyp)
 
   (* When generating SMT when we encounter joins between two or more
      blocks such as in the example below, we have to generate a muxer
@@ -527,21 +518,13 @@ module Make (Config : CONFIG) = struct
     | I_funcall (CR_one (CL_id (id, ret_ctyp)), extern, (function_id, _), args) ->
         if ctx_is_extern function_id ctx then (
           let name = ctx_get_extern function_id ctx in
-          if name = "sail_assert" then (
-            match args with
-            | [assertion; _] ->
-                let* smt = Smt.smt_cval assertion in
-                let* _ = add_event state Assertion (Fn ("not", [smt])) in
-                return []
-            | _ -> Reporting.unreachable l __POS__ "Bad arguments for assertion"
-          )
-          else if name = "sail_assume" then (
+          if name = "sail_assume" then (
             match args with
             | [assumption] ->
                 let* smt = Smt.smt_cval assumption in
                 let* _ = add_event state Assumption smt in
                 return []
-            | _ -> Reporting.unreachable l __POS__ "Bad arguments for assertion"
+            | _ -> Reporting.unreachable l __POS__ "Bad arguments for sail_assume"
           )
           else if name = "sqrt_real" then (
             match args with
@@ -555,6 +538,14 @@ module Make (Config : CONFIG) = struct
                 singleton (define_const id ret_ctyp value)
             | None -> raise (Reporting.err_general l ("No generator " ^ string_of_id function_id))
           )
+        )
+        else if extern && string_of_id function_id = "sail_assert" then (
+          match args with
+          | [assertion; _] ->
+              let* smt = Smt.smt_cval assertion in
+              let* _ = add_event state Assertion (Fn ("not", [smt])) in
+              return []
+          | _ -> Reporting.unreachable l __POS__ "Bad arguments for assertion"
         )
         else if extern && string_of_id function_id = "internal_vector_init" then singleton (declare_const id ret_ctyp)
         else if extern && string_of_id function_id = "internal_vector_update" then (
@@ -594,7 +585,7 @@ module Make (Config : CONFIG) = struct
               singleton (define_const id ret_ctyp (Fn (zencode_id function_id, smt_args)))
         )
         else failwith ("Unrecognised function " ^ string_of_id function_id)
-    | I_init (ctyp, id, cval) | I_copy (CL_id (id, ctyp), cval) ->
+    | I_init (ctyp, id, Init_cval cval) | I_copy (CL_id (id, ctyp), cval) ->
         let* smt = Smt.smt_cval cval in
         let* smt = Smt.smt_conversion ~into:ctyp ~from:(cval_ctyp cval) smt in
         singleton (define_const id ctyp smt)
@@ -654,7 +645,7 @@ module Make (Config : CONFIG) = struct
     | _ -> return []
 
   let smt_ctype_def = function
-    | CTD_abstract (id, _) -> Reporting.unreachable (id_loc id) __POS__ "Abstract types not supported for SMT target"
+    | CTD_abstract (id, _, _) -> Reporting.unreachable (id_loc id) __POS__ "Abstract types not supported for SMT target"
     | CTD_enum (id, elems) -> return (declare_datatypes (mk_enum (zencode_upper_id id) (List.map zencode_id elems)))
     | CTD_struct (id, fields) ->
         let* fields =
@@ -1346,7 +1337,6 @@ let compile ~unroll_limit env effect_info ast =
     let module Jibc = Jib_compile.Make (CompileConfig (struct
       let unroll_limit = unroll_limit
     end)) in
-    let env, effect_info = Jib_compile.add_special_functions env effect_info in
     let ctx = Jib_compile.initial_ctx ~for_target:"c" env effect_info in
     let t = Profile.start () in
     let cdefs, ctx = Jibc.compile_ast ctx ast in
