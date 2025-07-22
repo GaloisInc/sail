@@ -81,12 +81,14 @@ let opt_lean_real_numbers : bool ref = ref false
 
 let opt_single_file : bool ref = ref false
 
+let opt_lean_executable : bool ref = ref false
+
 (* We keep two flags to use the [If_flag] in the list of rewrites. They should never be equal. *)
 let opt_enable_matchbv : bool ref = ref false
 let opt_disable_matchbv : bool ref = ref true
 
-let lean_version : string = "lean4-pr-releases:pr-release-8577"
-let mathlib_version : string = "v4.20.0-rc5"
+let lean_version : string = "lean4:nightly-2025-07-10"
+let mathlib_version : string = "nightly-testing-2025-07-10"
 
 let lean_options =
   [
@@ -143,6 +145,10 @@ let lean_options =
       Arg.String Pretty_print_lean.(fun fn -> non_beq_types := IdSet.add (mk_id fn) !non_beq_types),
       "disable deriving a BEq instance for this type"
     );
+    ( Flag.create ~prefix:["lean"] "executable",
+      Arg.Unit (fun () -> opt_lean_executable := true),
+      "generate an executable if there is a main function in the Sail program"
+    );
   ]
 
 (* TODO[javra]: Currently these are the same as the Coq rewrites, we might want to change them. *)
@@ -150,7 +156,7 @@ let lean_rewrites =
   let open Rewrites in
   [
     ("move_termination_measures", []);
-    ("instantiate_outcomes", [String_arg "coq"]);
+    ("instantiate_outcomes", [String_arg "lean"]);
     ("realize_mappings", []);
     ("remove_vector_subrange_pats", []);
     ("remove_duplicate_valspecs", []);
@@ -183,7 +189,7 @@ let lean_rewrites =
     (* ("remove_assert", rewrite_ast_remove_assert); *)
     ("top_sort_defs", []);
     ("add_register_init_function", []);
-    ("const_prop_mutrec", [String_arg "coq"]);
+    ("const_prop_mutrec", [String_arg "lean"]);
     ("exp_lift_assign", []);
     ("early_return", []);
     (* We need to do the exhaustiveness check before merging, because it may
@@ -339,7 +345,7 @@ let create_lake_project (ctx : lean_context) executable =
   if !opt_lean_real_numbers then (
     output_string ctx.lakefile "\n\n[[require]]\n";
     output_string ctx.lakefile "name = \"mathlib\"\n";
-    output_string ctx.lakefile "git = \"https://github.com/leanprover-community/mathlib4\"\n";
+    output_string ctx.lakefile "git = \"https://github.com/leanprover-community/mathlib4-nightly-testing\"";
     output_string ctx.lakefile (Printf.sprintf "rev = \"%s\"" mathlib_version)
   );
   if executable then (
@@ -391,7 +397,7 @@ let output (out_name : string) env effect_info ({ defs; _ } as ast : Libsail.Typ
     Pretty_print_lean.pp_ast_lean env effect_info ast out_name_camel ctx.types_file ctx.import_files ctx.funcs_file
       noncomputable
   in
-  create_lake_project ctx executable
+  create_lake_project ctx (executable && !opt_lean_executable)
 (* Uncomment for debug output of the Sail code after the rewrite passes *)
 (* Pretty_print_sail.output_ast stdout (Type_check.strip_ast ast) *)
 

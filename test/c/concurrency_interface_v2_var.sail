@@ -39,9 +39,6 @@ instantiation sail_mem_read with
 
 
 instantiation sail_mem_write with
-  'addr_size = 64,
-  'addr_space = unit,
-  'mem_acc = unit,
   mem_acc_is_explicit = unit_true,
   mem_acc_is_ifetch = unit_false,
   mem_acc_is_ttw = unit_false,
@@ -50,10 +47,7 @@ instantiation sail_mem_write with
   mem_acc_is_rel_acq_rcsc = unit_false,
   mem_acc_is_standalone = unit_true,
   mem_acc_is_exclusive = unit_false,
-  mem_acc_is_atomic_rmw = unit_false,
-  'abort = bits(8),
-  'CHERI = true,
-  'cap_size_log = 3
+  mem_acc_is_atomic_rmw = unit_false
 
 enum my_barrier = Barrier1 | Barrier2
 

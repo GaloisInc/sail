@@ -2936,6 +2936,8 @@ let rec rewrite_var_updates (E_aux (expaux, ((l, _) as annot)) as exp) =
           Same_vars (E_aux (expaux, annot))
   in
 
+  let is_trivial = function E_aux ((E_id _ | E_lit _), _) -> true | _ -> false in
+
   match expaux with
   | E_let (lb, body) ->
       let body = rewrite_var_updates body in
@@ -2968,7 +2970,7 @@ let rec rewrite_var_updates (E_aux (expaux, ((l, _) as annot)) as exp) =
       let lb = LB_aux (LB_val (P_aux (P_wild, annot), exp), annot) in
       let exp' = E_aux (E_let (lb, E_aux (E_lit (mk_lit ~loc:l L_unit), annot)), annot) in
       rewrite_var_updates exp'
-  | E_if _ | E_match _ ->
+  | E_if _ | E_match _ | E_try _ ->
       let var_id = fresh_id "u__" l in
       let lb = LB_aux (LB_val (P_aux (P_id var_id, annot), exp), annot) in
       let exp' = E_aux (E_let (lb, E_aux (E_id var_id, annot)), annot) in
@@ -2996,8 +2998,7 @@ let rec rewrite_var_updates (E_aux (expaux, ((l, _) as annot)) as exp) =
          If i = 3 was instead a side-effecting expression with a non-unit type
          we would introduce a new variable rather than using a wildcard and unit literal
       *)
-      let is_trivial = function E_aux ((E_id _ | E_lit _), _) -> true | _ -> false in
-      if find_updated_vars exp |> IdSet.is_empty then exp
+      if IdSet.is_empty @@ find_updated_vars exp then exp
       else (
         let tuple_typ = typ_of exp in
         let typs =
@@ -3033,6 +3034,36 @@ let rec rewrite_var_updates (E_aux (expaux, ((l, _) as annot)) as exp) =
               )
             )
             bindings trivial_tuple
+        in
+        rewrite_var_updates exp
+      )
+  | E_app (f, args) ->
+      if IdSet.is_empty @@ find_updated_vars exp then exp
+      else (
+        let args = List.map (fun arg -> (fresh_id "a__" l, typ_of arg, arg)) args in
+        let trivial_args =
+          List.map
+            (fun (id, typ, arg) ->
+              if is_trivial arg then arg
+              else if is_unit_typ typ then E_aux (E_lit (L_aux (L_unit, l)), swaptyp unit_typ annot)
+              else E_aux (E_id id, swaptyp typ annot)
+            )
+            args
+        in
+        let trivial_app = E_aux (E_app (f, trivial_args), annot) in
+        let exp =
+          List.fold_right
+            (fun (id, typ, arg) app ->
+              if is_trivial arg then app
+              else (
+                let lb =
+                  if is_unit_typ typ then LB_aux (LB_val (P_aux (P_wild, swaptyp typ annot), arg), annot)
+                  else LB_aux (LB_val (add_p_typ env typ (P_aux (P_id id, swaptyp typ annot)), arg), annot)
+                in
+                E_aux (E_let (lb, app), annot)
+              )
+            )
+            args trivial_app
         in
         rewrite_var_updates exp
       )
@@ -3806,11 +3837,20 @@ module MakeExhaustive = struct
       | Pat_aux (Pat_when _, (l, _)) ->
           raise (Reporting.err_unreachable l __POS__ "Guarded pattern should have been rewritten away")
 
-  let check_cases process is_wild loc_of cases =
+  let check_cases warned_unknown process is_wild loc_of cases =
     let rec aux rps acc = function
       | [] -> (acc, rps)
       | [p] when is_wild p && match rps with [] -> true | _ -> false ->
-          let () = Reporting.print_err (loc_of p) "Match checking" "Redundant wildcard clause" in
+          let l = loc_of p in
+          let warn =
+            match (l, !warned_unknown) with
+            | Parse_ast.Unknown, true -> false
+            | Parse_ast.Unknown, false ->
+                warned_unknown := true;
+                true
+            | _, _ -> true
+          in
+          let () = if warn then Reporting.print_err (loc_of p) "Match checking" "Redundant wildcard clause" in
           (acc, [])
       | h :: t ->
           let rps', progress = process rps h in
@@ -3838,11 +3878,11 @@ module MakeExhaustive = struct
 
   let funcl_loc (FCL_aux (_, (def_annot, _))) = def_annot.loc
 
-  let rewrite_case redo_effects (e, ann) =
+  let rewrite_case warned_unknown redo_effects (e, ann) =
     match e with
     | E_match (e1, cases) | E_try (e1, cases) -> begin
         let env = env_of_annot ann in
-        let cases, rps = check_cases (process_pexp env) pexp_is_wild pexp_loc cases in
+        let cases, rps = check_cases warned_unknown (process_pexp env) pexp_is_wild pexp_loc cases in
         let rebuild cases =
           match e with E_match _ -> E_match (e1, cases) | E_try _ -> E_try (e1, cases) | _ -> assert false
         in
@@ -3885,7 +3925,7 @@ module MakeExhaustive = struct
       end
     | _ -> E_aux (e, ann)
 
-  let rewrite_fun rewriters (FD_aux (FD_function (r, t, fcls), f_ann)) =
+  let rewrite_fun warned_unknown rewriters (FD_aux (FD_function (r, t, fcls), f_ann)) =
     let id, fcl_ann =
       match fcls with
       | FCL_aux (FCL_funcl (id, _), ann) :: _ -> (id, ann)
@@ -3893,7 +3933,7 @@ module MakeExhaustive = struct
     in
     let env = env_of_tannot (snd fcl_ann) in
     let process_funcl rps (FCL_aux (FCL_funcl (_, pexp), _)) = process_pexp env rps pexp in
-    let fcls, rps = check_cases process_funcl funcl_is_wild funcl_loc fcls in
+    let fcls, rps = check_cases warned_unknown process_funcl funcl_is_wild funcl_loc fcls in
     let fcls' =
       List.map
         (function FCL_aux (FCL_funcl (id, pexp), ann) -> FCL_aux (FCL_funcl (id, rewrite_pexp rewriters pexp), ann))
@@ -3917,8 +3957,10 @@ module MakeExhaustive = struct
         FD_aux (FD_function (r, t, fcls' @ [default]), f_ann)
 
   let rewrite effect_info env ast =
+    (* Have we already warned about a redundunt wildcard at an unknown location? *)
+    let warned_unknown = ref false in
     let redo_effects = ref false in
-    let alg = { id_exp_alg with e_aux = rewrite_case redo_effects } in
+    let alg = { id_exp_alg with e_aux = rewrite_case warned_unknown redo_effects } in
     let ast' =
       rewrite_ast_base
         {
@@ -3927,7 +3969,7 @@ module MakeExhaustive = struct
           rewrite_mpat;
           rewrite_let;
           rewrite_lexp;
-          rewrite_fun;
+          rewrite_fun = rewrite_fun warned_unknown;
           rewrite_def;
           rewrite_ast = rewrite_ast_base_progress "Make patterns exhaustive";
         }
@@ -4617,6 +4659,16 @@ let rewrite_toplevel_let_patterns env ast =
   let defs = List.map rewrite_def ast.defs |> List.concat in
   { ast with defs }
 
+(* Remove definitions when they're shadowed by an external declaration.  Avoids problems with (e.g.)
+   adding effects to deal with termination to an otherwise pure function, which was causing the
+   definitions and the external function to disagree on whether the function is pure. *)
+let rewrite_remove_extern_defs target env ast =
+  let is_not_extern_def = function
+    | DEF_aux (DEF_fundef fd, _) when Env.is_extern (id_of_fundef fd) env target -> false
+    | _ -> true
+  in
+  { ast with defs = List.filter is_not_extern_def ast.defs }
+
 let opt_mono_rewrites = ref false
 let opt_mono_complex_nexps = ref true
 
@@ -4812,6 +4864,7 @@ let all_rewriters =
     ("add_unspecified_rec", basic_rewriter rewrite_add_unspecified_rec);
     ("toplevel_let_patterns", basic_rewriter rewrite_toplevel_let_patterns);
     ("remove_bitfield_records", basic_rewriter remove_bitfield_records);
+    ("remove_extern_defs", String_rewriter (fun target -> basic_rewriter (rewrite_remove_extern_defs target)));
   ]
 
 let rewrites_interpreter =

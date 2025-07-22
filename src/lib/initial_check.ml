@@ -1497,6 +1497,7 @@ let to_ast_outcome ctx (ev : P.outcome_spec) : outcome_spec * ctx * ctx =
       let outcome_args, inner_ctx = ConvertType.to_ast_typquant kenv ctx outcome_args in
       let typq, ts_ctx = ConvertType.to_ast_typquant kenv inner_ctx typq in
       let typ = ConvertType.to_ast_typ kenv ts_ctx typ in
+      let ctx = { ctx with outcome_names = IdSet.add id ctx.outcome_names } in
       let ctx =
         List.fold_left
           (fun ctx kopt ->
@@ -1504,7 +1505,6 @@ let to_ast_outcome ctx (ev : P.outcome_spec) : outcome_spec * ctx * ctx =
             let k = unaux_kind (kopt_kind kopt) in
             {
               ctx with
-              outcome_names = IdSet.add id ctx.outcome_names;
               outcome_variables =
                 KBindings.update v
                   (function
@@ -2168,9 +2168,12 @@ let to_ast ctx (P.Defs files) =
     (List.rev defs, ctx)
   in
   let wrap_file file defs =
-    [mk_def (DEF_pragma ("file_start", Pragma_line (file, P.Unknown))) ()]
-    @ defs
-    @ [mk_def (DEF_pragma ("file_end", Pragma_line (file, P.Unknown))) ()]
+    match file with
+    | None -> defs
+    | Some file ->
+        [mk_def (DEF_pragma ("file_start", Pragma_line (file, P.Unknown))) ()]
+        @ defs
+        @ [mk_def (DEF_pragma ("file_end", Pragma_line (file, P.Unknown))) ()]
   in
   let defs, ctx =
     List.fold_left
@@ -2525,7 +2528,7 @@ let ast_of_def_string_with ?inline ocaml_pos ctx f str =
       let tok = Lexing.lexeme lexbuf in
       raise (Reporting.err_syntax pos ("current token: " ^ tok))
   in
-  let ast, ctx = Reporting.forbid_errors ocaml_pos (fun ast -> process_ast ctx ast) (P.Defs [("", f [def])]) in
+  let ast, ctx = Reporting.forbid_errors ocaml_pos (fun ast -> process_ast ctx ast) (P.Defs [(None, f [def])]) in
   opt_magic_hash := internal;
   (ast, ctx)
 

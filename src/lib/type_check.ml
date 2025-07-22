@@ -1527,9 +1527,9 @@ let typ_of_simple_numeric = function
 let rec big_int_of_nexp (Nexp_aux (nexp, _)) =
   match nexp with
   | Nexp_constant c -> Some c
-  | Nexp_times (n1, n2) -> Util.option_binop Big_int.add (big_int_of_nexp n1) (big_int_of_nexp n2)
+  | Nexp_times (n1, n2) -> Util.option_binop Big_int.mul (big_int_of_nexp n1) (big_int_of_nexp n2)
   | Nexp_sum (n1, n2) -> Util.option_binop Big_int.add (big_int_of_nexp n1) (big_int_of_nexp n2)
-  | Nexp_minus (n1, n2) -> Util.option_binop Big_int.add (big_int_of_nexp n1) (big_int_of_nexp n2)
+  | Nexp_minus (n1, n2) -> Util.option_binop Big_int.sub (big_int_of_nexp n1) (big_int_of_nexp n2)
   | Nexp_exp n -> Option.map (fun n -> Big_int.pow_int_positive 2 (Big_int.to_int n)) (big_int_of_nexp n)
   | _ -> None
 
@@ -5268,10 +5268,12 @@ and check_outcome_instantiation :
   let instantiated = List.fold_left (fun m (kid, inst) -> KBindings.add kid inst m) KBindings.empty instantiated in
 
   (* Instantiate the outcome type with these existing parameters *)
-  let typ =
+  let typq, typ =
     List.fold_left
-      (fun typ (kid, (_, _, existing_arg)) -> typ_subst kid existing_arg typ)
-      typ (KBindings.bindings instantiated)
+      (fun (typq, typ) (kid, (_, _, existing_arg)) ->
+        (typquant_subst kid existing_arg typq, typ_subst kid existing_arg typ)
+      )
+      (typq, typ) (KBindings.bindings instantiated)
   in
 
   (* Check all the constraints on the outcome parameters *)

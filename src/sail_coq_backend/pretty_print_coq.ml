@@ -128,6 +128,7 @@ type context = {
   is_monadic : bool;
   proof_mode : bool;
       (* Is the body being given via a tactic in proof mode (affects implicit arguments in recursive definitions *)
+  none_nesting_depth : int; (* Track the number of nested None patterns to trigger special case in doc_case *)
 }
 let empty_ctxt =
   {
@@ -151,6 +152,7 @@ let empty_ctxt =
     ret_typ_pp = PPrint.empty;
     is_monadic = false;
     proof_mode = false;
+    none_nesting_depth = 0;
   }
 
 let add_single_kid_id_rename ctxt id kid =
@@ -682,7 +684,7 @@ and doc_nexp ctx env ?(skip_vars = KidSet.empty) nexp =
   and app (Nexp_aux (n, l) as nexp) =
     match n with
     | Nexp_if (i, t, e) ->
-        separate space [string "if"; doc_nc_exp ctx env i; string "then"; atomic t; string "else"; atomic e]
+        parens (separate space [string "if"; doc_nc_exp ctx env i; string "then"; atomic t; string "else"; atomic e])
     | Nexp_app (Id_aux (Id "div", _), [n1; n2]) -> separate space [string "ZEuclid.div"; atomic n1; atomic n2]
     | Nexp_app (Id_aux (Id "mod", _), [n1; n2]) -> separate space [string "ZEuclid.modulo"; atomic n1; atomic n2]
     | Nexp_app (Id_aux (Id "abs", _), [n1]) -> separate space [string "Z.abs"; atomic n1]
@@ -1125,21 +1127,22 @@ let rec nexp_const_eval (Nexp_aux (n, l) as nexp) =
 (* Decide whether two nexps used in a vector size are similar; if not
    a cast will be inserted *)
 let similar_nexps ctxt env ?(existentials = []) n1 n2 =
-  let rec same_nexp_shape (Nexp_aux (n1, _)) (Nexp_aux (n2, _)) =
+  let rec same_nexp_shape (Nexp_aux (n1, _) as nexp1) (Nexp_aux (n2, _)) =
     match (n1, n2) with
     | Nexp_id _, Nexp_id _ -> true
+    (* An existential can take on any compatible value *)
+    | _, Nexp_var k2
+      when List.exists (fun k -> Kid.compare k2 k == 0) existentials && not (prove __POS__ env (nc_neq nexp1 (nvar k2)))
+      ->
+        true
     (* TODO: this is really just an approximation to what we really
        want: will the Coq types have the same names?  We could
        probably do better by tracking which existential kids are equal
-       to bound kids.  We do a bit more than we orginally did to
-       detect when there's an existential which fits. *)
+       to bound kids. *)
     | Nexp_var k1, Nexp_var k2 ->
-        (Kid.compare k1 k2 == 0
+        Kid.compare k1 k2 == 0
         || prove __POS__ env (nc_eq (nvar k1) (nvar k2))
            && ((not (KidSet.mem k1 ctxt.bound_nvars)) || not (KidSet.mem k2 ctxt.bound_nvars))
-        )
-        || List.exists (fun k -> Kid.compare k2 k == 0) existentials
-           && not (prove __POS__ env (nc_neq (nvar k1) (nvar k2)))
     | Nexp_constant c1, Nexp_constant c2 -> Nat_big_num.equal c1 c2
     | Nexp_if (i1, t1, e1), Nexp_if (i2, t2, e2) ->
         NC.compare i1 i2 == 0 && same_nexp_shape t1 t2 && same_nexp_shape e1 e2
@@ -1291,10 +1294,10 @@ let maybe_parens_comma_list f ls =
 
 let complex_autocast ctxt env ?existentials top1 top2 =
   let ignore_apps_of = IdSet.of_list (List.map mk_id ["register"; "range"; "implicit"; "atom"; "atom_bool"]) in
-  let rec aux_typ env1 env2 (Typ_aux (t1, l1) as typ1) (Typ_aux (t2, l2) as typ2) =
+  let rec aux_typ env1 env2 existentials (Typ_aux (t1, l1) as typ1) (Typ_aux (t2, l2) as typ2) =
     match (t1, t2) with
     | Typ_app (f, args1), Typ_app (f', args2) when Id.compare f f' == 0 && not (IdSet.mem f ignore_apps_of) ->
-        let rs, args = List.split (List.map2 (aux_arg env1 env2) args1 args2) in
+        let rs, args = List.split (List.map2 (aux_arg env1 env2 existentials) args1 args2) in
         let f, args =
           if string_of_id f = "vector" then ("vec", List.rev args)
           else if string_of_id f = "bitvector" then ("mword", args)
@@ -1302,28 +1305,29 @@ let complex_autocast ctxt env ?existentials top1 top2 =
         in
         if List.exists (fun x -> x) rs then (true, "(" ^ f ^ " " ^ String.concat " " args ^ ")") else (false, "_")
     | Typ_tuple typs1, Typ_tuple typs2 ->
-        let rs, typs = List.split (List.map2 (aux_typ env1 env2) typs1 typs2) in
+        let rs, typs = List.split (List.map2 (aux_typ env1 env2 existentials) typs1 typs2) in
         if List.exists (fun x -> x) rs then (true, "(" ^ String.concat " * " typs ^ ")") else (false, "_")
     | Typ_exist (kopts, nc, typ), _ ->
         let env1 = List.fold_left (fun env kopt -> Env.add_typ_var l1 kopt env) env1 kopts in
         let env1 = Env.add_constraint nc env1 in
-        aux_typ env1 env2 typ typ2
+        aux_typ env1 env2 existentials typ typ2
     | _, Typ_exist (kopts, nc, typ) ->
         let env2 = List.fold_left (fun env kopt -> Env.add_typ_var l2 kopt env) env2 kopts in
+        let existentials = List.map kopt_kid kopts @ existentials in
         let env2 = Env.add_constraint nc env2 in
-        aux_typ env1 env2 typ1 typ
+        aux_typ env1 env2 existentials typ1 typ
     | _ ->
         let typ1' = Env.expand_synonyms env1 typ1 in
         let typ2' = Env.expand_synonyms env2 typ2 in
         if Typ.compare typ1 typ1' == 0 && Typ.compare typ2 typ2' == 0 then (false, "_")
-        else aux_typ env1 env2 typ1' typ2'
-  and aux_arg env1 env2 (A_aux (a1, _)) (A_aux (a2, _)) =
+        else aux_typ env1 env2 existentials typ1' typ2'
+  and aux_arg env1 env2 existentials (A_aux (a1, _)) (A_aux (a2, _)) =
     match (a1, a2) with
-    | A_nexp n1, A_nexp n2 -> if similar_nexps ctxt env ?existentials n1 n2 then (false, "_") else (true, "_sz")
-    | A_typ typ1, A_typ typ2 -> aux_typ env1 env2 typ1 typ2
+    | A_nexp n1, A_nexp n2 -> if similar_nexps ctxt env ~existentials n1 n2 then (false, "_") else (true, "_sz")
+    | A_typ typ1, A_typ typ2 -> aux_typ env1 env2 existentials typ1 typ2
     | _ -> (false, "_")
   in
-  aux_typ env env top1 top2
+  aux_typ env env (Option.value ~default:[] existentials) top1 top2
 
 (* Record whether we need to add an autocast for moving between
    different representations of a bitvector size, and if so whether we
@@ -1819,6 +1823,8 @@ let doc_exp, doc_let =
 
               let simple_type_equations = Type_check.instantiate_simple_equations (quant_items tqs) in
 
+              let env_kids = Env.get_typ_vars env in
+
               let doc_arg want_parens arg typ_from_fn =
                 let env = env_of arg in
                 let fixed_ghost_arg =
@@ -1831,25 +1837,48 @@ let doc_exp, doc_let =
                   | _ -> false
                 in
                 let typ_from_fn = subst_unifiers inst typ_from_fn in
-                let typ_from_fn = Env.expand_synonyms inst_env typ_from_fn in
-                (* TODO: more sophisticated check *)
+                let typ_from_fn' = Env.expand_synonyms inst_env typ_from_fn in
+                let expected_typ_opt =
+                  let annot = match arg with E_aux (_, a) -> a in
+                  expected_typ_of annot
+                in
                 let () =
-                  debug ctxt (lazy (" arg type found    " ^ string_of_typ (typ_of arg)));
-                  debug ctxt (lazy (" arg type expected " ^ string_of_typ typ_from_fn))
+                  debug ctxt (lazy (" arg type found        " ^ string_of_typ (typ_of arg)));
+                  debug ctxt
+                    ( lazy
+                      (" arg type expected     "
+                      ^ match expected_typ_opt with Some t -> string_of_typ t | None -> "<none>"
+                      )
+                      );
+                  debug ctxt (lazy (" arg type instantiated " ^ string_of_typ typ_from_fn))
                 in
                 let typ_of_arg = Env.expand_synonyms env (typ_of arg) in
                 let typ_of_arg = expand_range_type typ_of_arg in
                 let typ_of_arg' = match typ_of_arg with Typ_aux (Typ_exist (_, _, t), _) -> t | t -> t in
-                let typ_from_fn' = match typ_from_fn with Typ_aux (Typ_exist (_, _, t), _) -> t | t -> t in
+                (* The type checker will unpack existentials for functions, but we can still spot
+                   them because they're not bound in the environment *)
+                let existentials =
+                  tyvars_of_typ typ_from_fn' |> KidSet.elements
+                  |> List.filter (fun kid -> not (KBindings.mem kid env_kids))
+                in
+                let autocast_arg =
+                  (* If there's an expected type in the argument's annotation, we can leave cast
+                     insertion to the pretty printing of the argument, otherwise we use the
+                     difference between the instantiated type and the inferred type to work out
+                     if a cast is required at this point. *)
+                  match expected_typ_opt with
+                  | Some _ -> No
+                  | None -> autocast_req ctxt env ~existentials (typ_of arg) typ_from_fn typ_of_arg' typ_from_fn'
+                in
+                debug ctxt (lazy (" autocast: " ^ string_of_auto_t autocast_arg));
                 (* If the argument is an integer that can be inferred from the
                    context in a different form, let Coq fill it in.  E.g.,
                    when "64" is really "8 * width".  Avoid cases where the
                    type checker has introduced a phantom type variable while
                    calculating the instantiations. *)
                 let vars_in_env n =
-                  let ekids = Env.get_typ_vars env in
                   let frees = tyvars_of_nexp n in
-                  (not (KidSet.is_empty frees)) && KidSet.for_all (fun kid -> KBindings.mem kid ekids) frees
+                  (not (KidSet.is_empty frees)) && KidSet.for_all (fun kid -> KBindings.mem kid env_kids) frees
                 in
                 match (destruct_atom_nexp env typ_of_arg, destruct_atom_nexp env typ_from_fn) with
                 | _, _ when fixed_ghost_arg ->
@@ -1870,7 +1899,22 @@ let doc_exp, doc_let =
                 | Some (Nexp_aux (Nexp_var v, _)), _
                   when KidSet.mem v ctxt.bound_nvars && not (KBindings.mem v ctxt.kid_id_renames) ->
                     doc_var ctxt v
-                | _ -> construct_dep_pairs ctxt inst_env want_parens arg typ_from_fn
+                | _ ->
+                    let inner_parens, outer_parens =
+                      match (want_parens, autocast_arg) with
+                      | false, No -> (false, false)
+                      | false, _ -> (true, false)
+                      | true, No -> (true, false)
+                      | true, _ -> (true, true)
+                    in
+                    let arg_pp = construct_dep_pairs ctxt inst_env inner_parens arg typ_from_fn in
+                    let arg_pp =
+                      match autocast_arg with
+                      | No -> arg_pp
+                      | Simple -> string "autocast" ^^ space ^^ string "(T := mword)" ^/^ arg_pp
+                      | Complex s -> string ("autocast (T := fun _sz => " ^ s ^ "%type)") ^/^ arg_pp
+                    in
+                    if outer_parens then parens arg_pp else arg_pp
               in
               let epp =
                 if is_ctor then (
@@ -1914,8 +1958,8 @@ let doc_exp, doc_let =
               let epp =
                 match autocast with
                 | No -> epp
-                | Simple -> string autocast_id ^^ space ^^ string "(T := mword)" ^^ space ^^ parens epp
-                | Complex s -> string (autocast_id ^ " (T := fun _sz => " ^ s ^ "%type)") ^^ space ^^ parens epp
+                | Simple -> string autocast_id ^^ space ^^ string "(T := mword)" ^/^ parens epp
+                | Complex s -> string (autocast_id ^ " (T := fun _sz => " ^ s ^ "%type)") ^/^ parens epp
               in
               liftR (if aexp_needed then parens (align epp) else epp)
         end
@@ -1972,7 +2016,7 @@ let doc_exp, doc_let =
             | _ -> raise (Reporting.err_unreachable l __POS__ "Tuple doesn't have a tuple type")
           in
           let exp_pps = List.map2 (fun exp typ -> construct_dep_pairs ctxt (env_of exp) false exp typ) exps typs in
-          parens (separate (string ", ") exp_pps)
+          group (parens (align (separate (string "," ^^ break 1) exp_pps)))
         )
     | E_typ (typ, e) ->
         let env = env_of_annot (l, annot) in
@@ -2092,15 +2136,14 @@ let doc_exp, doc_let =
         raise (Reporting.err_unreachable l __POS__ "E_vector_update should have been rewritten before pretty-printing")
     | E_list exps -> brackets (separate_map (semi ^^ break 1) expN exps)
     | E_match (e, pexps) ->
-        let only_integers e = expY e in
         let epp =
           group
-            (separate space [string "match"; only_integers e; string "with"]
+            (separate space [string "match"; align (expN e); string "with"]
             ^/^ separate_map (break 1) (doc_case ctxt (env_of_annot (l, annot)) tail_position (typ_of e)) pexps
             ^/^ string "end"
             )
         in
-        if aexp_needed then parens (align epp) else align epp
+        epp
     | E_try (e, pexps) ->
         if effectful (effect_of e) then (
           let try_catch = if Option.is_some ctxt.early_ret then "try_catchR" else "try_catch" in
@@ -2114,7 +2157,7 @@ let doc_exp, doc_let =
           in
           if aexp_needed then parens (align epp) else align epp
         )
-        else raise (Reporting.err_todo l "Warning: try-block around pure expression")
+        else group (string "(* try block removed because subexpression never throws an exception *)" ^/^ expY e)
     | E_throw e ->
         let epp = liftR (separate space [string "throw"; expY e]) in
         if aexp_needed then parens (align epp) else align epp
@@ -2318,7 +2361,24 @@ let doc_exp, doc_let =
         let ctxt, pat = merge_kid_ids_in_pat ctxt old_env pat in
         let new_ctxt = merge_new_tyvars ctxt old_env pat (env_of e) in
         let pat_pp = doc_pat ctxt false pat typ in
-        group (prefix 3 1 (separate space [pipe; pat_pp; bigarrow]) (group (top_exp new_ctxt false tail_position e)))
+        (* As a special case to prevent code generated from mappings becoming so indented that the
+           pretty printing breaks down, we spot deep nestings of None patterns and put some blank
+           lines around the case rather than indenting further. *)
+        let new_ctxt, hardline_pp =
+          match pat with
+          | P_aux (P_app (id, [_]), _) when Id.compare id (mk_id "None") == 0 ->
+              ({ new_ctxt with none_nesting_depth = new_ctxt.none_nesting_depth + 1 }, new_ctxt.none_nesting_depth > 4)
+          | _ -> (new_ctxt, false)
+        in
+        if hardline_pp then
+          group
+            (separate space [pipe; pat_pp; bigarrow]
+            ^^ hardline ^^ hardline
+            ^^ group (top_exp new_ctxt false tail_position e)
+            ^^ hardline
+            )
+        else
+          group (prefix 3 1 (separate space [pipe; pat_pp; bigarrow]) (group (top_exp new_ctxt false tail_position e)))
     | Pat_aux (Pat_when (_, _, _), (l, _)) ->
         raise
           (Reporting.err_unreachable l __POS__
@@ -2432,13 +2492,12 @@ let types_used_with_generic_eq defs =
   let typs_req_def (DEF_aux (aux, _) as def) =
     match aux with
     | DEF_type _ | DEF_constraint _ | DEF_val _ | DEF_fixity _ | DEF_overload _ | DEF_default _ | DEF_pragma _
-    | DEF_register _ ->
+    | DEF_register _ | DEF_instantiation _ | DEF_outcome _ ->
         IdSet.empty
     | DEF_fundef fd -> typs_req_fundef fd
     | DEF_internal_mutrec fds -> List.fold_left IdSet.union IdSet.empty (List.map typs_req_fundef fds)
     | DEF_let lb -> fst (Rewriter.fold_letbind alg lb)
-    | DEF_mapdef _ | DEF_scattered _ | DEF_measure _ | DEF_loop_measures _ | DEF_impl _ | DEF_instantiation _
-    | DEF_outcome _ ->
+    | DEF_mapdef _ | DEF_scattered _ | DEF_measure _ | DEF_loop_measures _ | DEF_impl _ ->
         unreachable (def_loc def) __POS__ "Definition found in the Coq back-end that should have been rewritten away"
   in
   List.fold_left IdSet.union IdSet.empty (List.map typs_req_def defs)
@@ -3354,6 +3413,7 @@ let doc_funcl_init global proof_mode mutrec rec_opt ?rec_set (FCL_aux (FCL_funcl
       (* filled in below *)
       is_monadic;
       proof_mode;
+      none_nesting_depth = 0;
     }
   in
   let ctxt =
@@ -3768,9 +3828,12 @@ let doc_val global pat exp =
       )
   in
   let idpp = doc_id bare_ctxt id in
-  let base_pp = doc_exp ctxt false true exp ^^ dot in
+  let base_pp = doc_exp ctxt false true exp in
+  (* If the expression has assertions or incomplete pattern matches (if/when we allow that) then
+     unwrap the value.  There will be a typechecking failure in Rocq if there's an effect. *)
+  let def_pp = if effectful (effect_of exp) then group (string "unwrap_value" ^/^ parens base_pp) else base_pp in
   let () = debug_depth := 0 in
-  group (string "Definition" ^^ space ^^ idpp ^^ typpp ^^ space ^^ coloneq ^/^ base_pp)
+  group (string "Definition" ^^ space ^^ idpp ^^ typpp ^^ space ^^ coloneq ^/^ def_pp ^^ dot)
   ^^ hardline
   ^^ group (separate space [string "#[export] Hint Unfold"; idpp; colon; string "sail."])
   ^^ hardline
@@ -3797,8 +3860,10 @@ let doc_def global unimplemented generic_eq_types countable_types enum_number_de
   | DEF_loop_measures (id, _) ->
       unreachable (id_loc id) __POS__
         ("Loop termination measures for " ^ string_of_id id ^ " should have been rewritten before backend")
-  | DEF_impl _ | DEF_outcome _ | DEF_instantiation _ ->
-      unreachable (def_loc def) __POS__ "Event definition should have been rewritten before backend"
+  | DEF_impl _ -> unreachable (def_loc def) __POS__ "Event definition should have been rewritten before backend"
+  (* The instantiation has already been applied by a rewrite and we don't need to output anything for it
+     here.  They are still present to provide information for instantiating the concurrency interface. *)
+  | DEF_instantiation _ | DEF_outcome _ -> empty
   (* This backend doesn't currently support abstract types, so they must have been instantiated by now and
      the constraints don't need to appear in the output. *)
   | DEF_constraint _ -> empty
@@ -4493,92 +4558,179 @@ let pp_ast_coq library_style (types_file, types_modules) (defs_file, defs_module
       | BBV -> IdSet.empty
     in
     let interface_defs =
-      match concurrency_monad_params with
-      | None ->
-          string "Definition read_reg {A E} := @read_reg register A E."
-          ^^ hardline
-          ^^ string "Definition write_reg {A E} := @write_reg register A E."
-          ^^ hardline
-          ^^
-          if suppress_MR_M then empty
+      if Preprocess.have_symbol "CONCURRENCY_INTERFACE_V2" then
+        let open Monad_params in
+        let type_substs, id_substs = find_instantiations ast.defs in
+        let pp_typish name default =
+          match KBindings.find_opt (mk_kid name) type_substs with
+          | Some typ_arg -> doc_typ_arg { empty_ctxt with global } type_env typ_arg
+          | None -> string default
+        in
+        let pp_id name default =
+          match Bindings.find_opt (mk_id name) id_substs with
+          | Some id -> doc_id { empty_ctxt with global } id
+          | None -> string default
+        in
+        let mr_m =
+          if suppress_MR_M then []
           else
-            separate hardline
-              [
-                string ("Definition MR r a := monadR register a r " ^ exc_typ ^ ".");
-                string ("Definition M a := monad register a " ^ exc_typ ^ ".");
-                string ("Definition returnM {A:Type} := @returnm register A " ^ exc_typ ^ ".");
-                string ("Definition returnR {A:Type} (R:Type) := @returnm register A (R + " ^ exc_typ ^ ").");
-              ]
-      | Some params ->
-          let pp_typ = doc_typ { empty_ctxt with global } type_env in
-          let open Monad_params in
-          let mr_m =
-            if suppress_MR_M then []
-            else
-              [
-                empty;
-                string ("Definition M := Defs.monad " ^ exc_typ ^ ".");
-                string ("Definition MR r := Defs.monad (r + " ^ exc_typ ^ ")%type.");
-                string ("Definition returnM {A:Type} : A -> M A := Defs.returnm (E := " ^ exc_typ ^ ").");
-                string
-                  ("Definition returnR {A:Type} (R:Type) : A -> MR R A := Defs.returnm (E := R + " ^ exc_typ ^ ")%type.");
-              ]
-          in
-          separate hardline
-            ([
-               string "Definition read_reg {A E} := @read_reg register A E.";
-               string "Definition write_reg {A E} := @write_reg register A E.";
-               empty;
-               (* Explicitly say which definitions are type so that Coq uses the
+            [
+              empty;
+              string ("Definition M := Defs.monad " ^ exc_typ ^ ".");
+              string ("Definition MR r := Defs.monad (r + " ^ exc_typ ^ ")%type.");
+              string ("Definition returnM {A:Type} : A -> M A := Defs.returnm (E := " ^ exc_typ ^ ").");
+              string
+                ("Definition returnR {A:Type} (R:Type) : A -> MR R A := Defs.returnm (E := R + " ^ exc_typ ^ ")%type.");
+            ]
+        in
+        let usual_type name =
+          [
+            string ("  Definition " ^ name ^ " : Type := ") ^^ pp_typish name "unit" ^^ string ".";
+            string ("  Definition " ^ name ^ "_eq : EqDecision " ^ name ^ " := _.");
+            string ("  Definition " ^ name ^ "_countable : Countable " ^ name ^ " := _.");
+          ]
+        in
+        let classifier name =
+          string ("  Definition " ^ name ^ " := ") ^^ pp_id name "fun (_ : mem_acc) => false" ^^ string "."
+        in
+        separate hardline
+          ([
+             string "Definition read_reg {A E} := @read_reg register A E.";
+             string "Definition write_reg {A E} := @write_reg register A E.";
+             empty;
+             (* Explicitly say which definitions are type so that Coq uses the
                   type scope, otherwise a type like (mword 2 * mword 3) will fail
                   typechecking because it attempts to use multiplication. *)
-               string "Module Arch <: Arch.";
-               string "  Definition reg : Type -> Type := register.";
-               string "  Definition reg_eq := @Decidable_eq_register.";
-               string "  Include GRegister.";
-               string "  Definition greg_eq := @Decidable_eq_greg.";
-               string "  Definition greg_cnt := @Countable_greg.";
-               string "  Definition regval_inhabited := @Inhabited_register_values.";
-               string "  Definition regval_eq := @Decidable_eq_register_values.";
-               string "  Definition regval_cnt := @Countable_register_values.";
-               string "  Definition regval_transport A B := @register_transport A B (fun x => x).";
-               string "  Definition regval_transport_sound A := @register_transport_sound A (fun x => x).";
-               (*   string "  Definition reg_countable : Countable reg := _.";*)
-               string "  Definition va_size := 64%N.";
-               string "  Definition pa : Type := " ^^ pp_typ params.pa_type ^^ string ".";
-               string "  Definition pa_eq : EqDecision pa := _.";
-               string "  Definition pa_countable : Countable pa := _.";
-               string "  Definition arch_ak : Type := " ^^ pp_typ params.arch_ak_type ^^ string ".";
-               string "  Definition arch_ak_eq : EqDecision arch_ak := _.";
-               string "  Definition translation : Type := " ^^ pp_typ params.translation_summary_type ^^ string ".";
-               string "  Definition translation_eq : EqDecision translation := _.";
-               string "  Definition trans_start := " ^^ pp_typ params.trans_start_type ^^ string ".";
-               string "  Definition trans_start_eq : EqDecision trans_start := _.";
-               string "  Definition trans_end := " ^^ pp_typ params.trans_end_type ^^ string ".";
-               string "  Definition trans_end_eq : EqDecision trans_end := _.";
-               string "  Definition abort : Type := " ^^ pp_typ params.abort_type ^^ string ".";
-               string "  Definition abort_eq : EqDecision abort := _.";
-               string "  Definition barrier : Type := " ^^ pp_typ params.barrier_type ^^ string ".";
-               string "  Definition barrier_eq : EqDecision barrier := _.";
-               string "  Definition cache_op : Type := " ^^ pp_typ params.cache_op_type ^^ string ".";
-               string "  Definition cache_op_eq : EqDecision cache_op := _.";
-               string "  Definition tlb_op : Type := " ^^ pp_typ params.tlbi_type ^^ string ".";
-               string "  Definition tlb_op_eq : EqDecision tlb_op := _.";
-               string "  Definition fault : Type := " ^^ pp_typ params.fault_type ^^ string ".";
-               string "  Definition fault_eq : EqDecision fault := _.";
-               string "  Definition sys_reg_id : Type := " ^^ pp_typ params.sys_reg_id_type ^^ string ".";
-               string "  Definition sys_reg_id_eq : EqDecision sys_reg_id := _.";
-               string "  Definition sys_reg_id_countable : Countable sys_reg_id := _.";
-               string "End Arch.";
-               empty;
-               string "Module Interface := Interface Arch.";
-               string "Module Defs := Defs Arch Interface.";
-             ]
-            @ mr_m
-            )
+             string "Module Arch <: Arch.";
+             string "  Definition reg : Type -> Type := register.";
+             string "  Definition reg_eq := @Decidable_eq_register.";
+             string "  Include GRegister.";
+             string "  Definition greg_eq := @Decidable_eq_greg.";
+             string "  Definition greg_cnt := @Countable_greg.";
+             string "  Definition regval_inhabited := @Inhabited_register_values.";
+             string "  Definition regval_eq := @Decidable_eq_register_values.";
+             string "  Definition regval_cnt := @Countable_register_values.";
+             string "  Definition regval_transport A B := @register_transport A B (fun x => x).";
+             string "  Definition regval_transport_sound A := @register_transport_sound A (fun x => x).";
+             (*   string "  Definition reg_countable : Countable reg := _.";*)
+             string "  Definition addr_size : N := Z.to_N (" ^^ pp_typish "addr_size" "64" ^^ string ").";
+           ]
+          @ usual_type "addr_space" @ usual_type "mem_acc"
+          @ [
+              string "  Definition CHERI : bool := " ^^ pp_typish "CHERI" "false" ^^ string ".";
+              string "  Definition cap_size_log : N := " ^^ pp_typish "cap_size_log" "0" ^^ string ".";
+              classifier "mem_acc_is_explicit";
+              classifier "mem_acc_is_ifetch";
+              classifier "mem_acc_is_ttw";
+              classifier "mem_acc_is_relaxed";
+              classifier "mem_acc_is_rel_acq_rcpc";
+              classifier "mem_acc_is_rel_acq_rcsc";
+              classifier "mem_acc_is_standalone";
+              classifier "mem_acc_is_exclusive";
+              classifier "mem_acc_is_atomic_rmw";
+            ]
+          @ usual_type "trans_start" @ usual_type "trans_end" @ usual_type "abort" @ usual_type "barrier"
+          @ usual_type "cache_op" @ usual_type "tlbi" @ usual_type "exn" @ usual_type "sys_reg_id"
+          @ [
+              string "End Arch.";
+              empty;
+              string "Module Interface := Interface Arch.";
+              string "Module Defs := Defs Arch Interface.";
+            ]
+          @ mr_m
+          )
+      else (
+        match concurrency_monad_params with
+        | None ->
+            string "Definition read_reg {A E} := @read_reg register A E."
+            ^^ hardline
+            ^^ string "Definition write_reg {A E} := @write_reg register A E."
+            ^^ hardline
+            ^^
+            if suppress_MR_M then empty
+            else
+              separate hardline
+                [
+                  string ("Definition MR r a := monadR register a r " ^ exc_typ ^ ".");
+                  string ("Definition M a := monad register a " ^ exc_typ ^ ".");
+                  string ("Definition returnM {A:Type} := @returnm register A " ^ exc_typ ^ ".");
+                  string ("Definition returnR {A:Type} (R:Type) := @returnm register A (R + " ^ exc_typ ^ ").");
+                ]
+        | Some params ->
+            let pp_typ = doc_typ { empty_ctxt with global } type_env in
+            let open Monad_params in
+            let mr_m =
+              if suppress_MR_M then []
+              else
+                [
+                  empty;
+                  string ("Definition M := Defs.monad " ^ exc_typ ^ ".");
+                  string ("Definition MR r := Defs.monad (r + " ^ exc_typ ^ ")%type.");
+                  string ("Definition returnM {A:Type} : A -> M A := Defs.returnm (E := " ^ exc_typ ^ ").");
+                  string
+                    ("Definition returnR {A:Type} (R:Type) : A -> MR R A := Defs.returnm (E := R + " ^ exc_typ
+                   ^ ")%type."
+                    );
+                ]
+            in
+            separate hardline
+              ([
+                 string "Definition read_reg {A E} := @read_reg register A E.";
+                 string "Definition write_reg {A E} := @write_reg register A E.";
+                 empty;
+                 (* Explicitly say which definitions are type so that Coq uses the
+                  type scope, otherwise a type like (mword 2 * mword 3) will fail
+                  typechecking because it attempts to use multiplication. *)
+                 string "Module Arch <: Arch.";
+                 string "  Definition reg : Type -> Type := register.";
+                 string "  Definition reg_eq := @Decidable_eq_register.";
+                 string "  Include GRegister.";
+                 string "  Definition greg_eq := @Decidable_eq_greg.";
+                 string "  Definition greg_cnt := @Countable_greg.";
+                 string "  Definition regval_inhabited := @Inhabited_register_values.";
+                 string "  Definition regval_eq := @Decidable_eq_register_values.";
+                 string "  Definition regval_cnt := @Countable_register_values.";
+                 string "  Definition regval_transport A B := @register_transport A B (fun x => x).";
+                 string "  Definition regval_transport_sound A := @register_transport_sound A (fun x => x).";
+                 (*   string "  Definition reg_countable : Countable reg := _.";*)
+                 string "  Definition va_size := 64%N.";
+                 string "  Definition pa : Type := " ^^ pp_typ params.pa_type ^^ string ".";
+                 string "  Definition pa_eq : EqDecision pa := _.";
+                 string "  Definition pa_countable : Countable pa := _.";
+                 string "  Definition arch_ak : Type := " ^^ pp_typ params.arch_ak_type ^^ string ".";
+                 string "  Definition arch_ak_eq : EqDecision arch_ak := _.";
+                 string "  Definition translation : Type := " ^^ pp_typ params.translation_summary_type ^^ string ".";
+                 string "  Definition translation_eq : EqDecision translation := _.";
+                 string "  Definition trans_start := " ^^ pp_typ params.trans_start_type ^^ string ".";
+                 string "  Definition trans_start_eq : EqDecision trans_start := _.";
+                 string "  Definition trans_end := " ^^ pp_typ params.trans_end_type ^^ string ".";
+                 string "  Definition trans_end_eq : EqDecision trans_end := _.";
+                 string "  Definition abort : Type := " ^^ pp_typ params.abort_type ^^ string ".";
+                 string "  Definition abort_eq : EqDecision abort := _.";
+                 string "  Definition barrier : Type := " ^^ pp_typ params.barrier_type ^^ string ".";
+                 string "  Definition barrier_eq : EqDecision barrier := _.";
+                 string "  Definition cache_op : Type := " ^^ pp_typ params.cache_op_type ^^ string ".";
+                 string "  Definition cache_op_eq : EqDecision cache_op := _.";
+                 string "  Definition tlb_op : Type := " ^^ pp_typ params.tlbi_type ^^ string ".";
+                 string "  Definition tlb_op_eq : EqDecision tlb_op := _.";
+                 string "  Definition fault : Type := " ^^ pp_typ params.fault_type ^^ string ".";
+                 string "  Definition fault_eq : EqDecision fault := _.";
+                 string "  Definition sys_reg_id : Type := " ^^ pp_typ params.sys_reg_id_type ^^ string ".";
+                 string "  Definition sys_reg_id_eq : EqDecision sys_reg_id := _.";
+                 string "  Definition sys_reg_id_countable : Countable sys_reg_id := _.";
+                 string "End Arch.";
+                 empty;
+                 string "Module Interface := Interface Arch.";
+                 string "Module Defs := Defs Arch Interface.";
+               ]
+              @ mr_m
+              )
+      )
     in
 
     let typdefs, defs = List.partition is_typ_def defs in
+    let inst_defs, main_defs = Callgraph.partition_instantiation_definitions defs in
+    let typdefs = typdefs @ inst_defs in
 
     let enum_fn_map, enum_fn_set = enum_fn_names typdefs in
     let enum_number_defs, defs =
@@ -4652,7 +4804,10 @@ let pp_ast_coq library_style (types_file, types_modules) (defs_file, defs_module
                (fun lib -> separate space [string "Require Import"; string lib] ^^ dot)
                defs_modules;
              hardline;
-             (if Option.is_some concurrency_monad_params then string "Import Defs." ^^ hardline else empty);
+             ( if Preprocess.have_symbol "CONCURRENCY_INTERFACE_V2" || Option.is_some concurrency_monad_params then
+                 string "Import Defs." ^^ hardline
+               else empty
+             );
              ( if !opt_coq_record_update then
                  string "From RecordUpdate Require Import RecordSet."
                  ^^ hardline ^^ string "Import RecordSetNotations." ^^ hardline

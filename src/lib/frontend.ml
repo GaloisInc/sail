@@ -53,7 +53,7 @@ module StringMap = Map.Make (String)
 let opt_ddump_initial_ast = ref false
 let opt_ddump_side_effect = ref false
 let opt_ddump_tc_ast = ref false
-let opt_list_files = ref false
+let opt_list_files = ref None
 let opt_reformat : string option ref = ref None
 
 let finalize_ast asserts_termination ctx env ast =
@@ -241,7 +241,7 @@ module SailHandler : FILE_HANDLER = struct
 
   let process ~default_sail_dir ~target_name ~options ctx (filename, comments, defs) =
     let defs = Preprocess.preprocess default_sail_dir target_name options defs in
-    let ast, ctx = Initial_check.process_ast ctx (Parse_ast.Defs [(filename, defs)]) in
+    let ast, ctx = Initial_check.process_ast ctx (Parse_ast.Defs [(Some filename, defs)]) in
     ({ ast with comments = [(filename, comments)] }, ctx)
 
   let check env ast = Type_error.check env ast
@@ -286,7 +286,7 @@ let process_files ~target_name ~default_sail_dir ~options ctx vs_ids regs files 
           ((cont.ctx, IdSet.union vs_ids cont.vs_ids, regs @ cont.regs), ProcessedFile { filename; cont = cont.check })
       | Generated defs ->
           let defs = Preprocess.preprocess default_sail_dir target_name options defs in
-          let ast, ctx = Initial_check.process_ast ctx (Parse_ast.Defs [("", defs)]) in
+          let ast, ctx = Initial_check.process_ast ctx (Parse_ast.Defs [(None, defs)]) in
           ((ctx, vs_ids, regs), ProcessedGenerated ast.defs)
       )
     (ctx, vs_ids, regs) files
@@ -327,17 +327,19 @@ let load_modules ?target default_sail_dir options env proj root_mod_ids =
       mod_ids
   in
 
-  if !opt_list_files then (
-    let included_files =
-      List.map (fun parsed_module -> if parsed_module.included then parsed_module.files else []) parsed_modules
-      |> List.concat
-    in
-    print_endline
-      (Util.string_of_list " "
-         (fun s -> s)
-         (List.filter_map (function File { filename; _ } -> Some filename | Generated _ -> None) included_files)
-      );
-    exit 0
+  ( match !opt_list_files with
+  | Some sep ->
+      let included_files =
+        List.map (fun parsed_module -> if parsed_module.included then parsed_module.files else []) parsed_modules
+        |> List.concat
+      in
+      print_endline
+        (Util.string_of_list sep
+           (fun s -> s)
+           (List.filter_map (function File { filename; _ } -> Some filename | Generated _ -> None) included_files)
+        );
+      exit 0
+  | None -> ()
   );
 
   let all_files =
