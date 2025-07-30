@@ -23,7 +23,7 @@ inductive MachineBits where
 
 def DEFAULT_RSTVEC := 0x00001000
 
-def initializeMemory (_size: MachineBits) (elf : ELF32File) : Std.HashMap Nat (BitVec 8) :=
+def initializeMemory (_size: MachineBits) (elf : ELF32File) : Std.ExtHashMap Nat (BitVec 8) :=
   -- From: sail-riscv/c_emulator/riscv_sim.cpp
   --
   -- let RST_VEC_SIZE : UInt32 := 8
@@ -86,7 +86,16 @@ def my_main (_ : PUnit) :=
   -- let _ <- pure (unsafeIO (IO.print "TEST"))
   dbg_trace "In my_main!"
   -- print_effect
-  sail_main ()
+  pure (print_bits "PC = " (← readReg PC))
+  sailTryCatch (do
+      (init_model ())
+      (cycle_count ())
+      (loop ())
+  ) (λ the_exception ↦
+    match the_exception with
+      | .Error_not_implemented s => (pure (print_string "Error: Not implemented: " s))
+      | .Error_internal_error () => (pure (print "Error: internal error"))
+  )
 
 
 def runElf32 (elf : ELF32File) : IO UInt32 :=
