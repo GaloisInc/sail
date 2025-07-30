@@ -86,7 +86,8 @@ def my_main (_ : PUnit) :=
   -- let _ <- pure (unsafeIO (IO.print "TEST"))
   dbg_trace "In my_main!"
   -- print_effect
-  pure (print_bits "PC = " (← readReg PC))
+  -- pure (print_bits "PC = " (← readReg PC))
+  print_bits_effect "PC = " (← readReg PC)
   sailTryCatch (do
       (init_model ())
       (cycle_count ())
