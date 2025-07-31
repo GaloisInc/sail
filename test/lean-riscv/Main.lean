@@ -7,7 +7,7 @@ def main (args : List String) : IO UInt32 := do
     pure 255
   else do
     -- Parse input elf file.
-    let elfE <- readElf32 args[1]!
+    let elfE <- readElf args[1]!
     match elfE with
     | Except.error err => do
       IO.println "Failed to parse elf file:"
@@ -15,6 +15,16 @@ def main (args : List String) : IO UInt32 := do
 
       pure 255
       
-    | Except.ok elf => do
+    | Except.ok (.elf64 _elf) => do
+      -- -- Run program
+      -- runElf64 elf
+
+      IO.println "64 bit ELF file not supported"
+
+      pure 255
+    | Except.ok (.elf32 elf) => do
       -- Run program
       runElf32 elf
+      -- IO.println "32 bit ELF file not supported"
+
+      -- pure 255

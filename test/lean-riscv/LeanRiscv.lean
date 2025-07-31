@@ -6,6 +6,10 @@ import LeanRV64DExecutable.Sail.Sail
 
 open Register
 
+def readElf (elfFilepath : System.FilePath) : IO (Except String RawELFFile) := do
+  let bytes <- IO.FS.readBinFile elfFilepath
+  pure (mkRawELFFile? bytes)
+
 def readElf32 (elfFilepath : System.FilePath) : IO (Except String ELF32File) := do
   let bytes <- IO.FS.readBinFile elfFilepath
   match mkRawELFFile? bytes with
