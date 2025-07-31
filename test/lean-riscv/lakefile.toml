@@ -17,7 +17,7 @@ rev = "d6ba1361944d1ed300ffcda4532a6768b8a5c6db"
 [[require]]
 name = "Lean_RV64D_executable"
 git = "https://github.com/GaloisInc/sail-riscv.git"
-rev = "9b9d2235b026700de8916e336e4a66910ba7bd7e"
+rev = "6a016386ac6d78c825f3aa647dcee275e9156f0f"
 subDir = "build/model/Lean_RV64D_executable"
 
 

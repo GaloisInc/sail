@@ -76,13 +76,16 @@ def initializeMemory (_size: MachineBits) (elf : ELF32File) : Std.ExtHashMap Nat
 
   mem
 
-def initializeRegisters (elf: ELF32File): Std.ExtDHashMap Register RegisterType :=
-  -- TODO: initialize register properly
-  let emptyRegs := Std.ExtDHashMap.emptyWithCapacity
-  let regs := emptyRegs.insert PC (elf.file_header.e_entry:UInt32).toBitVec
-  regs
+def initializeRegisters (elf: ELF32File) :=
+  open LeanRV64DExecutable.Functions in
+  open Sail in
+  -- -- TODO: initialize register properly
+  -- let emptyRegs := Std.ExtDHashMap.emptyWithCapacity
+  -- let regs := emptyRegs.insert PC (elf.file_header.e_entry:UInt32).toBitVec
+  -- regs
+  writeReg PC (elf.file_header.e_entry:UInt32).toBitVec
 
-def my_main (_ : PUnit) :=
+def my_main (elf: ELF32File) (_ : PUnit) :=
   open LeanRV64DExecutable.Functions in
   open Sail in
   do
@@ -91,6 +94,7 @@ def my_main (_ : PUnit) :=
   dbg_trace "In my_main!"
   -- print_effect
   -- pure (print_bits "PC = " (← readReg PC))
+  initializeRegisters elf
   print_bits_effect "PC = " (← readReg PC)
   sailTryCatch (do
       (init_model ())
@@ -107,7 +111,7 @@ def runElf32 (elf : ELF32File) : IO UInt32 :=
   open Sail in
   open LeanRV64DExecutable.Functions in
   let mem := initializeMemory MachineBits.B32 elf
-  let regs := initializeRegisters elf
+  let regs := Std.ExtDHashMap.emptyWithCapacity -- initializeRegisters elf
   let initialState := ⟨regs, (), mem, default, default, default⟩
-  main_of_sail_main initialState (sail_model_init >=> my_main)
+  main_of_sail_main initialState (sail_model_init >=> my_main elf)
   -- main_of_sail_main initialState my_main
