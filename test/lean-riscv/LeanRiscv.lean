@@ -76,14 +76,25 @@ def initializeMemory (_size: MachineBits) (elf : ELF32File) : Std.ExtHashMap Nat
 
   mem
 
+def is_tohost (s : ELF32SectionHeaderTableEntry × InterpretedSection) : Bool :=
+  s.snd.section_name_as_string == some ".tohost"
+
 def initializeRegisters (elf: ELF32File) :=
   open LeanRV64DExecutable.Functions in
   open Sail in
+  do
   -- -- TODO: initialize register properly
   -- let emptyRegs := Std.ExtDHashMap.emptyWithCapacity
   -- let regs := emptyRegs.insert PC (elf.file_header.e_entry:UInt32).toBitVec
   -- regs
-  writeReg PC (elf.file_header.e_entry:UInt32).toBitVec
+  -- dbg_trace (repr elf)
+  let tohost_addr_m := (elf.interpreted_sections.find? is_tohost).map (λ (s: ELF32SectionHeaderTableEntry × InterpretedSection) => s.snd.section_addr)
+  match tohost_addr_m with
+  | none => do
+      panic ".tohost address not found in ELF"
+  | some tohost_addr => do
+    writeReg PC (elf.file_header.e_entry:UInt32).toBitVec
+    writeReg htif_tohost (tohost_addr:UInt32).toBitVec
 
 def my_main (elf: ELF32File) (_ : PUnit) :=
   open LeanRV64DExecutable.Functions in
@@ -94,12 +105,15 @@ def my_main (elf: ELF32File) (_ : PUnit) :=
   dbg_trace "In my_main!"
   -- print_effect
   -- pure (print_bits "PC = " (← readReg PC))
-  initializeRegisters elf
   print_bits_effect "PC = " (← readReg PC)
+  print_bits_effect "htif_tohost = " (← readReg htif_tohost)
   sailTryCatch (do
-      (init_model ())
-      (cycle_count ())
-      (loop ())
+      init_model ()
+      cycle_count ()
+      initializeRegisters elf
+      print_bits_effect "PC = " (← readReg PC)
+      print_bits_effect "htif_tohost = " (← readReg htif_tohost)
+      loop ()
   ) (λ the_exception ↦
     match the_exception with
       | .Error_not_implemented s => (pure (print_string "Error: Not implemented: " s))
