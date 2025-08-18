@@ -27,7 +27,7 @@ inductive MachineBits where
 
 def DEFAULT_RSTVEC := 0x00001000
 
-def initializeMemory (_size: MachineBits) (elf : ELF32File) : Std.ExtHashMap Nat (BitVec 8) :=
+def initializeMemory (_size: MachineBits) (elf : ELF64File) : Std.ExtHashMap Nat (BitVec 8) :=
   -- From: sail-riscv/c_emulator/riscv_sim.cpp
   --
   -- let RST_VEC_SIZE : UInt32 := 8
@@ -76,10 +76,10 @@ def initializeMemory (_size: MachineBits) (elf : ELF32File) : Std.ExtHashMap Nat
 
   mem
 
-def is_tohost (s : ELF32SectionHeaderTableEntry × InterpretedSection) : Bool :=
+def is_tohost (s : ELF64SectionHeaderTableEntry × InterpretedSection) : Bool :=
   s.snd.section_name_as_string == some ".tohost"
 
-def initializeRegisters (elf: ELF32File) :=
+def initializeRegisters (elf: ELF64File) :=
   open LeanRV64DExecutable.Functions in
   open Sail in
   do
@@ -88,15 +88,15 @@ def initializeRegisters (elf: ELF32File) :=
   -- let regs := emptyRegs.insert PC (elf.file_header.e_entry:UInt32).toBitVec
   -- regs
   -- dbg_trace (repr elf)
-  let tohost_addr_m := (elf.interpreted_sections.find? is_tohost).map (λ (s: ELF32SectionHeaderTableEntry × InterpretedSection) => s.snd.section_addr)
+  let tohost_addr_m := (elf.interpreted_sections.find? is_tohost).map (λ (s: ELF64SectionHeaderTableEntry × InterpretedSection) => s.snd.section_addr)
   match tohost_addr_m with
   | none => do
       panic ".tohost address not found in ELF"
   | some tohost_addr => do
-    writeReg PC (elf.file_header.e_entry:UInt32).toBitVec
-    writeReg htif_tohost (tohost_addr:UInt32).toBitVec
+    writeReg PC (elf.file_header.e_entry:UInt64).toBitVec
+    writeReg htif_tohost (tohost_addr:UInt64).toBitVec
 
-def my_main (elf: ELF32File) (_ : PUnit) :=
+def my_main (elf: ELF64File) (_ : PUnit) :=
   open LeanRV64DExecutable.Functions in
   open Sail in
   do
@@ -121,10 +121,10 @@ def my_main (elf: ELF32File) (_ : PUnit) :=
   )
 
 
-def runElf32 (elf : ELF32File) : IO UInt32 :=
+def runElf64 (elf : ELF64File) : IO UInt32 :=
   open Sail in
   open LeanRV64DExecutable.Functions in
-  let mem := initializeMemory MachineBits.B32 elf
+  let mem := initializeMemory MachineBits.B64 elf
   let regs := Std.ExtDHashMap.emptyWithCapacity -- initializeRegisters elf
   let initialState := ⟨regs, (), mem, default, default, default⟩
   main_of_sail_main initialState (sail_model_init >=> my_main elf)

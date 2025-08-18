@@ -15,16 +15,17 @@ def main (args : List String) : IO UInt32 := do
 
       pure 255
       
-    | Except.ok (.elf64 _elf) => do
-      -- -- Run program
-      -- runElf64 elf
-
-      IO.println "64 bit ELF file not supported"
-
-      pure 255
-    | Except.ok (.elf32 elf) => do
+    | Except.ok (.elf64 elf) => do
       -- Run program
-      runElf32 elf
-      -- IO.println "32 bit ELF file not supported"
+      runElf64 elf
+
+      -- IO.println "64 bit ELF file not supported"
 
       -- pure 255
+    | Except.ok (.elf32 _elf) => do
+      -- -- Run program
+      -- runElf32 elf
+
+      IO.println "32 bit ELF file not supported"
+
+      pure 255
