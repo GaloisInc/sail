@@ -17,7 +17,7 @@ rev = "d6ba1361944d1ed300ffcda4532a6768b8a5c6db"
 [[require]]
 name = "Lean_RV64D_executable"
 git = "https://github.com/GaloisInc/sail-riscv.git"
-rev = "a81adb77a1150bdbe2a3327d5daaf5ae90e2871c"
+rev = "a4c8dfa84d17d0bbc577bf5c67ef098b2c1bed0a"
 subDir = "build/model/Lean_RV64D_executable"
-
-
+# This can be useful for debugging (comment out the above three lines)
+# path = "../../../sail-riscv/build/model/Lean_RV64D_executable/"

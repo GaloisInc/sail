@@ -1,8 +1,9 @@
--- This module serves as the root of the `LeanRiscv` library.
--- Import modules here that should be built as part of the library.
+import Std.Data.HashMap.Basic
+
 import ELFSage
 import LeanRV64DExecutable
 import LeanRV64DExecutable.Sail.Sail
+import LeanRV64DExecutable.Step
 
 open Register
 
@@ -27,7 +28,7 @@ inductive MachineBits where
 
 def DEFAULT_RSTVEC := 0x00001000
 
-def initializeMemory (_size: MachineBits) (elf : ELF64File) : Std.ExtHashMap Nat (BitVec 8) :=
+def initializeMemory (_size: MachineBits) (elf : ELF64File) : Std.HashMap Nat (BitVec 8) :=
   -- From: sail-riscv/c_emulator/riscv_sim.cpp
   --
   -- let RST_VEC_SIZE : UInt32 := 8
@@ -96,7 +97,7 @@ def initializeRegisters (elf: ELF64File) :=
     writeReg PC (elf.file_header.e_entry:UInt64).toBitVec
     writeReg htif_tohost (tohost_addr:UInt64).toBitVec
 
-def my_main (elf: ELF64File) (_ : PUnit) :=
+def my_main (elf: ELF64File) :=
   open LeanRV64DExecutable.Functions in
   open Sail in
   do
@@ -108,7 +109,7 @@ def my_main (elf: ELF64File) (_ : PUnit) :=
   print_bits_effect "PC = " (← readReg PC)
   print_bits_effect "htif_tohost = " (← readReg htif_tohost)
   sailTryCatch (do
-      init_model ()
+      init_model ""
       cycle_count ()
       initializeRegisters elf
       print_bits_effect "PC = " (← readReg PC)
@@ -127,5 +128,8 @@ def runElf64 (elf : ELF64File) : IO UInt32 :=
   let mem := initializeMemory MachineBits.B64 elf
   let regs := Std.ExtDHashMap.emptyWithCapacity -- initializeRegisters elf
   let initialState := ⟨regs, (), mem, default, default, default⟩
-  main_of_sail_main initialState (sail_model_init >=> my_main elf)
+  main_of_sail_main initialState $ fun () => do
+    initializeRegisters elf
+    sail_model_init ()
+    my_main elf
   -- main_of_sail_main initialState my_main
