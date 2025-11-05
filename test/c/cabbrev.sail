@@ -2,9 +2,6 @@ default Order dec
 
 $include <prelude.sail>
 
-// We need to generate a separate header
-$option --c-generate-header
-
 // Make sure the my_pair type is included in the C output
 $option --c-preserve-type my_pair
 
@@ -31,7 +28,7 @@ $c_override {
 }
 
 // Just so this test works in non-C backends
-$iftarget c
+$iftarget c cpp
 val mk_pair = pure "mk_pair" : unit -> my_pair
 $else
 val mk_pair : unit -> my_pair

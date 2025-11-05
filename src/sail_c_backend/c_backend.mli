@@ -51,9 +51,6 @@ open Type_check
 
 (** Global compilation options *)
 
-(** Define generated functions as static *)
-val opt_static : bool ref
-
 (** Ordinarily we use plain z-encoding to name-mangle generated Sail identifiers into a form suitable for C. If
     opt_prefix is set, then the "z" which is added on the front of each generated C function will be replaced by
     opt_prefix. E.g. opt_prefix := "sail_" would give sail_my_function rather than zmy_function. *)
@@ -80,14 +77,10 @@ val optimize_fixed_int : bool ref
 val optimize_fixed_bits : bool ref
 
 module type CODEGEN_CONFIG = sig
-  (** If this is true, then we will generate a separate header file, otherwise a single C file will be generated without
-      a header file. *)
-  val generate_header : bool
-
   (** A list of includes for the generated C file *)
   val includes : string list
 
-  (** A list of includes for the generated header (if it is created). *)
+  (** A list of includes for the generated header. *)
   val header_includes : string list
 
   (** Do not generate a main function *)
@@ -114,9 +107,21 @@ module type CODEGEN_CONFIG = sig
   val assert_to_exception : bool
 
   val preserve_types : Ast_util.IdSet.t
+
+  (** If set generate a C++ class for the model instead of global C functions/variables. *)
+  val cpp : bool
+
+  (** Name of the C++ class. *)
+  val cpp_class_name : string
+
+  (* C++ namespace name. *)
+  val cpp_namespace : string
+
+  (* Optional classes/structs to derive from. *)
+  val cpp_derive_from : string option
 end
 
 module Codegen (Config : CODEGEN_CONFIG) : sig
   val jib_of_ast : Env.t -> Effects.side_effect_info -> typed_ast -> cdef list * Jib_compile.ctx
-  val compile_ast : Env.t -> Effects.side_effect_info -> string -> typed_ast -> string option * string
+  val compile_ast : Env.t -> Effects.side_effect_info -> string -> typed_ast -> string * string
 end

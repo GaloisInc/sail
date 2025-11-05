@@ -55,6 +55,10 @@ type l =
   | Hint of string * l * l
   | Range of Lexing.position * Lexing.position
 
+type comment_type = Comment_block | Comment_line
+
+type doc_comment = { contents : string; comment_type : comment_type }
+
 (** We put the attribute data type in it's own module, so other modules can import it unqualified. The parse AST and the
     main AST share this type, so modules that wouldn't normally import this module will want to use it. *)
 module Attribute_data = struct
@@ -72,6 +76,11 @@ end
 open Attribute_data
 
 type 'a annot = l * 'a
+
+type 'a field_annot =
+  | Ann_attribute of string * attribute_data option * 'a field_annot * l
+  | Ann_doc of doc_comment * 'a field_annot * l
+  | Ann_item of 'a
 
 type extern = { pure : bool; bindings : (string * string) list }
 
@@ -101,7 +110,7 @@ type kid = Kid_aux of kid_aux * l
 
 type id = Id_aux of id_aux * l
 
-type 'a infix_token = IT_primary of 'a | IT_op of id | IT_prefix of id
+type 'a infix_token = IT_primary of 'a | IT_op of string | IT_prefix of string
 
 type lit_aux =
   | (* Literal constant *)
@@ -115,6 +124,7 @@ type lit_aux =
   | L_bin of string (* bit vector constant, C-style *)
   | L_undef (* undefined value *)
   | L_string of string (* string constant *)
+  | L_multiline_string of string list (* multi-line string constant *)
   | L_real of string
 
 type lit = L_aux of lit_aux * l
@@ -281,15 +291,6 @@ type tannot_opt_aux =
     Typ_annot_opt_none
   | Typ_annot_opt_some of typquant * atyp
 
-type typschm_opt_aux = TypSchm_opt_none | TypSchm_opt_some of typschm
-
-type typschm_opt = TypSchm_opt_aux of typschm_opt_aux * l
-
-type effect_opt_aux =
-  | (* Optional effect annotation for functions *)
-    Effect_opt_none (* sugar for empty effect set *)
-  | Effect_opt_effect of atyp
-
 type rec_opt_aux =
   | (* Optional recursive annotation for functions *)
     Rec_none (* no termination measure *)
@@ -301,7 +302,7 @@ and funcl_aux =
   (* Function clause *)
   | FCL_private of funcl
   | FCL_attribute of string * attribute_data option * funcl
-  | FCL_doc of string * funcl
+  | FCL_doc of doc_comment * funcl
   | FCL_funcl of id * pexp
 
 type type_union = Tu_aux of type_union_aux * l
@@ -310,13 +311,11 @@ and type_union_aux =
   (* Type union constructors *)
   | Tu_private of type_union
   | Tu_attribute of string * attribute_data option * type_union
-  | Tu_doc of string * type_union
+  | Tu_doc of doc_comment * type_union
   | Tu_ty_id of atyp * id
-  | Tu_ty_anon_rec of (atyp * id) list * id
+  | Tu_ty_anon_rec of (id * atyp) field_annot list * id
 
 type tannot_opt = Typ_annot_opt_aux of tannot_opt_aux * l
-
-type effect_opt = Effect_opt_aux of effect_opt_aux * l
 
 type rec_opt = Rec_aux of rec_opt_aux * l
 
@@ -366,7 +365,7 @@ type mapcl = MCL_aux of mapcl_aux * l
 and mapcl_aux =
   (* mapping clause (bidirectional pattern-match) *)
   | MCL_attribute of string * attribute_data option * mapcl
-  | MCL_doc of string * mapcl
+  | MCL_doc of doc_comment * mapcl
   | MCL_bidir of mpexp * mpexp
   | MCL_forwards_deprecated of mpexp * exp
   | MCL_forwards of pexp
@@ -375,7 +374,7 @@ and mapcl_aux =
 
 type mapdef_aux =
   (* mapping definition (bidirectional pattern-match function) *)
-  | MD_mapping of id * typschm_opt * mapcl list
+  | MD_mapping of id * typschm option * mapcl list
 
 type mapdef = MD_aux of mapdef_aux * l
 
@@ -392,11 +391,11 @@ type fundef_aux =
 type type_def_aux =
   (* Type definition body *)
   | TD_abbrev of id * typquant * kind option * atyp (* type abbreviation *)
-  | TD_record of id * typquant * (atyp * id) list (* struct type definition *)
+  | TD_record of id * typquant * (id * atyp) field_annot list (* struct type definition *)
   | TD_variant of id * typquant * type_union list * bool (* union type definition *)
-  | TD_enum of id * (id * atyp) list * (id * exp option) list (* enumeration type definition *)
+  | TD_enum of id * (id * atyp) list * (id field_annot * exp option) list (* enumeration type definition *)
   | TD_abstract of id * kind * string list option
-  | TD_bitfield of id * atyp * (id * index_range) list (* register mutable bitfield type definition *)
+  | TD_bitfield of id * atyp * (id * index_range) field_annot list (* register mutable bitfield type definition *)
 
 type val_spec_aux =
   (* Value type specification *)
@@ -451,7 +450,7 @@ type def_aux =
   | DEF_impl of funcl (* impl definition *)
   | DEF_let of letbind (* value definition *)
   | DEF_overload of id * id list (* operator overload specifications *)
-  | DEF_fixity of prec * Big_int.num * id (* fixity declaration *)
+  | DEF_fixity of prec * Big_int.num * string (* fixity declaration *)
   | DEF_val of val_spec (* top-level type constraint *)
   | DEF_outcome of outcome_spec * def list (* top-level outcome definition *)
   | DEF_instantiation of id * subst list (* instantiation *)
@@ -463,21 +462,10 @@ type def_aux =
   | DEF_pragma of string * pragma
   | DEF_private of def
   | DEF_attribute of string * attribute_data option * def
-  | DEF_doc of string * def
+  | DEF_doc of doc_comment * def
   | DEF_internal_mutrec of fundef list
 
 and def = DEF_aux of def_aux * l
-
-type lexp_aux =
-  (* lvalue expression, can't occur out of the parser *)
-  | LE_id of id (* identifier *)
-  | LE_mem of id * exp list
-  | LE_vector of lexp * exp (* vector element *)
-  | LE_vector_range of lexp * exp * exp (* subvector *)
-  | LE_vector_concat of lexp list
-  | LE_field of lexp * id (* struct field *)
-
-and lexp = LE_aux of lexp_aux * l
 
 type defs =
   (* Definition sequence *)

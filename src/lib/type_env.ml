@@ -702,7 +702,20 @@ module Well_formedness = struct
             ("Numeric type constructor " ^ string_of_id id ^ " expected arguments " ^ string_of_typquant typq
            ^ ", but was used here with none"
             )
-    | Nexp_id id -> typ_error l ("Undefined numeric type " ^ string_of_id id)
+    | Nexp_id id -> (
+        let msg = "No numeric type named " ^ string_of_id id ^ " in scope" in
+        match Bindings.find_opt id env.global.letbinds with
+        | Some item ->
+            typ_error
+              (Hint
+                 ( string_of_id id ^ " defined as term-level variable here, but this cannot be used in a type",
+                   item_loc item,
+                   l
+                 )
+              )
+              msg
+        | None -> typ_error l msg
+      )
     | Nexp_var kid when KidSet.mem kid exs.vars -> ()
     | Nexp_var kid -> begin
         match get_typ_var kid env with
@@ -1060,6 +1073,18 @@ let wf_typ_arg ~at:at_l env (A_aux (_, l) as arg) =
     let extra, l = match l with Parse_ast.Unknown -> (" here", at_l) | _ -> ("", l) in
     typ_raise l (err_because (Err_other ("Well-formedness check failed for type argument" ^ extra), err_l, err))
 
+let wf_nexp ~at:at_l env (Nexp_aux (_, l) as nexp) =
+  Well_formedness.wf_debug "nexp" string_of_nexp nexp Well_formedness.no_existential;
+  incr depth;
+  try
+    Well_formedness.wf_nexp Well_formedness.no_existential env nexp;
+    decr depth
+  with Type_error (err_l, err) ->
+    decr depth;
+    let extra, l = match l with Parse_ast.Unknown -> (" here", at_l) | _ -> ("", l) in
+    typ_raise l
+      (err_because (Err_other ("Well-formedness check failed for numeric type expression" ^ extra), err_l, err))
+
 let wf_constraint ~at:at_l env (NC_aux (_, l) as nc) =
   Well_formedness.wf_debug "constraint" string_of_n_constraint nc Well_formedness.no_existential;
   incr depth;
@@ -1155,6 +1180,8 @@ let get_val_spec id env =
   match get_val_spec_opt id env with
   | Some (bind, _) -> bind
   | None -> typ_raise (id_loc id) (Err_no_function_type { id; functions = get_val_specs env })
+
+let has_val_spec id env = Bindings.mem id env.global.val_specs
 
 let add_union_id ?in_module id bind env =
   if bound_global env id then already_bound_global "union constructor" id env
@@ -1460,7 +1487,7 @@ let get_records env = filter_items env env.global.records
 
 let add_record id typq fields env =
   let field_env = add_typquant (id_loc id) typq env in
-  let fields = List.map (fun (typ, id) -> (expand_synonyms field_env typ, id)) fields in
+  let fields = List.map (fun ((id, typ), _) -> (expand_synonyms field_env typ, id)) fields in
   if bound_typ_id env id then already_bound "struct" id env
   else (
     typ_print (lazy (adding ^ "struct " ^ string_of_id id)) [@coverage off];
@@ -1609,8 +1636,7 @@ let get_register id env =
 
 let get_registers env = filter_items env env.global.registers
 
-let is_extern id env backend =
-  try not (Ast_util.extern_assoc backend (Bindings.find_opt id env.global.externs) = None) with Not_found -> false
+let is_extern id env backend = Option.is_some (Ast_util.extern_assoc backend (Bindings.find_opt id env.global.externs))
 
 let add_extern id ext env =
   update_global (fun global -> { global with externs = Bindings.add id ext global.externs }) env

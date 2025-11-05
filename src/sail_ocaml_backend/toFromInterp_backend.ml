@@ -157,6 +157,7 @@ let frominterp_typedef (TD_aux (td_aux, (l, _))) =
   match td_aux with
   | TD_variant (id, typq, arms, _) -> begin
       match id with
+      | Id_aux ((And_bool | Or_bool), _) -> empty
       | Id_aux (Id "read_kind", _) -> empty
       | Id_aux (Id "write_kind", _) -> empty
       | Id_aux (Id "a64_barrier_domain", _) -> empty
@@ -256,7 +257,8 @@ let frominterp_typedef (TD_aux (td_aux, (l, _))) =
   | TD_enum (Id_aux (Id "barrier_kind", _), _, _) -> empty
   | TD_enum (Id_aux (Id "trans_kind", _), _, _) -> empty
   | TD_enum (Id_aux (Id "cache_op_kind", _), _, _) -> empty
-  | TD_enum (id, ids, _) ->
+  | TD_enum (id, members, _) ->
+      let ids = List.map fst members in
       let fromInterpValueName = concat [string (maybe_zencode (string_of_id id)); string "FromInterpValue"] in
       let fromFallback =
         separate space
@@ -288,7 +290,7 @@ let frominterp_typedef (TD_aux (td_aux, (l, _))) =
       in
       fromInterpValue ^^ twice hardline
   | TD_record (record_id, typq, fields, _) ->
-      let fromInterpField (typ, id) =
+      let fromInterpField ((id, typ), _) =
         separate space
           [
             string (maybe_zencode ((if !lem_mode then string_of_id record_id ^ "_" else "") ^ string_of_id id));
@@ -408,6 +410,7 @@ let tointerp_typedef (TD_aux (td_aux, (l, _))) =
   match td_aux with
   | TD_variant (id, typq, arms, _) -> begin
       match id with
+      | Id_aux ((And_bool | Or_bool), _) -> empty
       | Id_aux (Id "read_kind", _) -> empty
       | Id_aux (Id "write_kind", _) -> empty
       | Id_aux (Id "a64_barrier_domain", _) -> empty
@@ -496,7 +499,8 @@ let tointerp_typedef (TD_aux (td_aux, (l, _))) =
   | TD_enum (Id_aux (Id "barrier_kind", _), _, _) -> empty
   | TD_enum (Id_aux (Id "trans_kind", _), _, _) -> empty
   | TD_enum (Id_aux (Id "cache_op_kind", _), _, _) -> empty
-  | TD_enum (id, ids, _) ->
+  | TD_enum (id, members, _) ->
+      let ids = List.map fst members in
       let toInterpValueName = concat [string (maybe_zencode (string_of_id id)); string "ToInterpValue"] in
       let toInterpValue =
         prefix 2 1
@@ -517,7 +521,7 @@ let tointerp_typedef (TD_aux (td_aux, (l, _))) =
       in
       toInterpValue ^^ twice hardline
   | TD_record (record_id, typq, fields, _) ->
-      let toInterpField (typ, id) =
+      let toInterpField ((id, typ), _) =
         parens
           (separate comma_sp
              [

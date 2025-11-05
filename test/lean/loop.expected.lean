@@ -54,7 +54,7 @@ namespace Out.Functions
 open option
 open Register
 
-/-- Type quantifiers: k_ex2238# : Bool, k_ex2237# : Bool -/
+/-- Type quantifiers: k_ex2414_ : Bool, k_ex2413_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -64,22 +64,22 @@ def __id (x : Int) : Int :=
 
 /-- Type quantifiers: n : Int, m : Int -/
 def _shl_int_general (m : Int) (n : Int) : Int :=
-  bif (n ≥b 0)
+  if ((n ≥b 0) : Bool)
   then (Int.shiftl m n)
   else (Int.shiftr m (Neg.neg n))
 
 /-- Type quantifiers: n : Int, m : Int -/
 def _shr_int_general (m : Int) (n : Int) : Int :=
-  bif (n ≥b 0)
+  if ((n ≥b 0) : Bool)
   then (Int.shiftr m n)
   else (Int.shiftl m (Neg.neg n))
 
 /-- Type quantifiers: m : Int, n : Int -/
 def fdiv_int (n : Int) (m : Int) : Int :=
-  bif ((n <b 0) && (m >b 0))
+  if (((n <b 0) && (m >b 0)) : Bool)
   then ((Int.tdiv (n +i 1) m) -i 1)
   else
-    (bif ((n >b 0) && (m <b 0))
+    (if (((n >b 0) && (m <b 0)) : Bool)
     then ((Int.tdiv (n -i 1) m) -i 1)
     else (Int.tdiv n m))
 
@@ -89,7 +89,7 @@ def fmod_int (n : Int) (m : Int) : Int :=
 
 /-- Type quantifiers: len : Nat, k_v : Nat, len ≥ 0 ∧ k_v ≥ 0 -/
 def sail_mask (len : Nat) (v : (BitVec k_v)) : (BitVec len) :=
-  bif (len ≤b (Sail.BitVec.length v))
+  if ((len ≤b (Sail.BitVec.length v)) : Bool)
   then (Sail.BitVec.truncate v len)
   else (Sail.BitVec.zeroExtend v len)
 
@@ -99,7 +99,7 @@ def sail_ones (n : Nat) : (BitVec n) :=
 
 /-- Type quantifiers: l : Int, i : Int, n : Nat, n ≥ 0 -/
 def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
-  bif (l ≥b n)
+  if ((l ≥b n) : Bool)
   then ((sail_ones n) <<< i)
   else
     (let one : (BitVec n) := (sail_mask n (0b1 : (BitVec 1)))
@@ -268,6 +268,27 @@ def while_print (_ : Unit) : Unit := Id.run do
       let i := loop_vars
       loop_vars := ((i +i 1) : Int)
     (pure loop_vars) ) : Id Int )
+  (pure (print_int "i = " i))
+
+def while_print_fuel (_ : Unit) : SailM Unit := do
+  let i : Int := 0
+  let i ← (( do
+    let loop_vars ← whileFuelM (fuel :=100) (fun i => (pure (i <b 100))) i
+      fun i => do
+        assert true "loop dummy assert"
+        (pure (i +i 1))
+    (pure loop_vars) ) : SailM Int )
+  (pure (print_int "i = " i))
+
+/-- Type quantifiers: n : Int -/
+def until_print_fuel (n : Int) : SailM Unit := do
+  let i : Int := 0
+  let i ← (( do
+    let loop_vars ← untilFuelM (fuel :=n) (fun i => (pure (i <b 100))) i
+      fun i => do
+        assert true "loop dummy assert"
+        (pure (i +i 1))
+    (pure loop_vars) ) : SailM Int )
   (pure (print_int "i = " i))
 
 def while_print_long (_ : Unit) : Unit := Id.run do

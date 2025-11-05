@@ -102,6 +102,8 @@ let is_ct_enum = function CT_enum _ -> true | _ -> false
 
 let iblock1 = function [instr] -> instr | instrs -> iblock instrs
 
+type abstract_type_initialised = Initialised | Uninitialised
+
 (** The context type contains two type-checking environments. ctx.local_env contains the closest typechecking
     environment, usually from the expression we are compiling, whereas ctx.tc_env is the global type checking
     environment from type-checking the entire AST. We also keep track of local variables in ctx.locals, so we know when
@@ -111,7 +113,7 @@ type ctx = {
   records : (kid list * ctyp Bindings.t) Bindings.t;
   enums : IdSet.t Bindings.t;
   variants : (kid list * ctyp Bindings.t) Bindings.t;
-  abstracts : ctyp Bindings.t;
+  abstracts : (ctyp * abstract_type_initialised) Bindings.t;
   valspecs : (string option * ctyp list * ctyp * uannot) Bindings.t;
   quants : ctyp KBindings.t;
   local_env : Env.t;
@@ -120,19 +122,22 @@ type ctx = {
   locals : (mut * ctyp) NameMap.t;
   registers : ctyp Bindings.t;
   letbinds : int list;
-  letbind_ids : NameSet.t;
+  letbind_ctyps : ctyp Bindings.t;
   no_raw : bool;
   no_static : bool;
   coverage_override : bool;
   def_annot : unit def_annot option;
 }
 
+let letbind_ids ctx =
+  List.fold_left (fun ids (id, _) -> NameSet.add (name id) ids) NameSet.empty (Bindings.bindings ctx.letbind_ctyps)
+
 let ctx_map_ctyps f ctx =
   {
     ctx with
     records = Bindings.map (fun (params, fields) -> (params, Bindings.map f fields)) ctx.records;
     variants = Bindings.map (fun (params, fields) -> (params, Bindings.map f fields)) ctx.variants;
-    abstracts = Bindings.map f ctx.abstracts;
+    abstracts = Bindings.map (fun (ctyp, initialised) -> (f ctyp, initialised)) ctx.abstracts;
     valspecs =
       Bindings.map
         (fun (extern, param_ctyps, ret_ctyp, uannot) -> (extern, List.map f param_ctyps, f ret_ctyp, uannot))
@@ -182,7 +187,7 @@ let initial_ctx ?for_target env effect_info =
     locals = NameMap.empty;
     registers = Bindings.empty;
     letbinds = [];
-    letbind_ids = NameSet.empty;
+    letbind_ctyps = Bindings.empty;
     no_raw = false;
     no_static = false;
     coverage_override = true;
@@ -404,7 +409,11 @@ module Make (C : CONFIG) = struct
     | None -> (
         match id with
         | Name (id, _) -> (
-            match Bindings.find_opt id ctx.registers with Some ctyp -> Some (Mutable, ctyp) | None -> None
+            match Bindings.find_opt id ctx.registers with
+            | Some ctyp -> Some (Mutable, ctyp)
+            | None -> (
+                match Bindings.find_opt id ctx.letbind_ctyps with Some ctyp -> Some (Immutable, ctyp) | None -> None
+              )
           )
         | _ -> None
       )
@@ -424,7 +433,12 @@ module Make (C : CONFIG) = struct
         | Some (_, ctyp) -> ([], V_id (id, ctyp), [])
         | None -> ([], V_id (id, ctyp_of_typ ctx (lvar_typ typ)), [])
       end
-    | AV_abstract (id, typ) -> ([], V_call (Get_abstract, [V_id (name id, ctyp_of_typ ctx typ)]), [])
+    | AV_abstract (id, typ) -> (
+        match Bindings.find_opt id ctx.abstracts with
+        | Some (ctyp, _) -> ([], V_id (Abstract id, ctyp), [])
+        | None ->
+            Reporting.unreachable l __POS__ ("Failed to find a C-type for abstract type variable " ^ string_of_id id)
+      )
     | AV_ref (id, typ) -> ([], V_lit (VL_ref (string_of_id id), CT_ref (ctyp_of_typ ctx (lvar_typ typ))), [])
     | AV_lit (L_aux (L_string str, _), typ) -> ([], V_lit (VL_string (String.escaped str), ctyp_of_typ ctx typ), [])
     | AV_lit (L_aux (L_num n, _), typ) when C.ignore_64 -> ([], V_lit (VL_int n, ctyp_of_typ ctx typ), [])
@@ -771,19 +785,19 @@ module Make (C : CONFIG) = struct
                  (mk_id "sail_config_bits_abstract_len", [])
                  [V_id (json, CT_json)];
              ]
-            @ select_abstract l ctx abstract_name (fun id abstract_ctyp ->
+            @ select_abstract l ctx abstract_name (fun id (abstract_ctyp, _) ->
                   match abstract_ctyp with
                   | CT_fint 64 ->
                       [
                         iextern l
                           (CL_id (value, ctyp))
                           (mk_id "sail_config_unwrap_abstract_bits", [])
-                          [V_call (Get_abstract, [V_id (name id, abstract_ctyp)]); V_id (json, CT_json)];
+                          [V_id (Abstract id, abstract_ctyp); V_id (json, CT_json)];
                       ]
                   | CT_lint | CT_fint _ ->
                       let len = ngensym () in
                       [
-                        iinit l (CT_fint 64) len (V_call (Get_abstract, [V_id (name id, abstract_ctyp)]));
+                        iinit l (CT_fint 64) len (V_id (Abstract id, abstract_ctyp));
                         iextern l
                           (CL_id (value, ctyp))
                           (mk_id "sail_config_unwrap_abstract_bits", [])
@@ -1759,13 +1773,14 @@ module Make (C : CONFIG) = struct
       types it compiles to the context, ctx, which is why it returns a ctypdef * ctx pair. **)
   let compile_type_def ctx (TD_aux (type_def, (l, _))) =
     match type_def with
-    | TD_enum (id, ids, _) ->
+    | TD_enum (id, members, _) ->
+        let ids = List.map fst members in
         (Some (CTD_enum (id, ids)), { ctx with enums = Bindings.add id (IdSet.of_list ids) ctx.enums })
     | TD_record (id, typq, ctors, _) ->
         let record_ctx = { ctx with local_env = Env.add_typquant l typq ctx.local_env } in
         let ctors =
           List.fold_left
-            (fun ctors (typ, id) -> Bindings.add id (fast_int (ctyp_of_typ record_ctx typ)) ctors)
+            (fun ctors ((id, typ), _) -> Bindings.add id (fast_int (ctyp_of_typ record_ctx typ)) ctors)
             Bindings.empty ctors
         in
         let params = quant_kopts typq |> List.filter is_typ_kopt |> List.map kopt_kid in
@@ -1805,17 +1820,22 @@ module Make (C : CONFIG) = struct
               (* The abstract initialisers are ran very early, before the rest of the model,
                  so we can't rely on Jib static initialisers being set up. *)
               let setup, call, cleanup = compile_config' l { ctx with no_static = true } key ctyp in
-              CTDI_instrs (setup @ [call (CL_id (name id, ctyp))] @ cleanup)
+              CTDI_instrs (setup @ [call (CL_id (Abstract id, ctyp))] @ cleanup)
           | TDC_none -> CTDI_none
         in
+        let is_initialised = function CTDI_instrs _ -> Initialised | CTDI_none -> Uninitialised in
         match kind with
         | K_int ->
             let ctyp = ctyp_of_typ ctx (atom_typ (nid id)) in
             let inst = compile_inst ctyp inst in
-            (Some (CTD_abstract (id, ctyp, inst)), { ctx with abstracts = Bindings.add id ctyp ctx.abstracts })
+            ( Some (CTD_abstract (id, ctyp, inst)),
+              { ctx with abstracts = Bindings.add id (ctyp, is_initialised inst) ctx.abstracts }
+            )
         | K_bool ->
             let inst = compile_inst CT_bool inst in
-            (Some (CTD_abstract (id, CT_bool, inst)), { ctx with abstracts = Bindings.add id CT_bool ctx.abstracts })
+            ( Some (CTD_abstract (id, CT_bool, inst)),
+              { ctx with abstracts = Bindings.add id (CT_bool, is_initialised inst) ctx.abstracts }
+            )
         | _ -> Reporting.unreachable l __POS__ "Found abstract type that was neither an integer nor a boolean"
       )
     (* Will be re-written before here, see bitfield.ml *)
@@ -2155,7 +2175,7 @@ module Make (C : CONFIG) = struct
     let fundef_label = label "fundef_fail_" in
     let orig_ctx = ctx in
     (* The context must be updated before we call ctyp_of_typ on the argument types. *)
-    let ctx = { ctx with local_env = Env.add_typquant (id_loc id) quant ctx.tc_env } in
+    let ctx = { ctx with local_env = Env.add_typquant (id_loc id) quant ctx.local_env } in
     let ctx = update_coverage_override_def def_annot ctx in
 
     let arg_ctyps = List.map (ctyp_of_typ ctx) arg_typs in
@@ -2172,7 +2192,7 @@ module Make (C : CONFIG) = struct
         ctx compiled_args arg_ctyps
     in
 
-    let known_ids = IdSet.fold (fun id -> NameSet.add (name id)) (pat_ids pat) ctx.letbind_ids in
+    let known_ids = IdSet.fold (fun id -> NameSet.add (name id)) (pat_ids pat) (letbind_ids ctx) in
     let guard_bindings = ref NameSet.empty in
     let guard_instrs =
       match guard with
@@ -2224,7 +2244,8 @@ module Make (C : CONFIG) = struct
     let instrs = compile_body ctx in
 
     if Option.is_some debug_attr then (
-      prerr_endline Util.("IR for " ^ string_of_id id ^ ":" |> yellow |> bold |> clear);
+      let type_string = Util.string_of_list ", " string_of_ctyp arg_ctyps ^ " -> " ^ string_of_ctyp ret_ctyp in
+      prerr_endline Util.("IR for " ^ string_of_id id ^ ": " ^ type_string |> yellow |> bold |> clear);
       List.iter (fun instr -> prerr_endline (string_of_instr instr)) instrs
     );
 
@@ -2300,7 +2321,7 @@ module Make (C : CONFIG) = struct
   and compile_def' n total ctx (DEF_aux (aux, def_annot) as def) =
     let def_env = def_annot.env in
     let def_annot = strip_def_annot def_annot in
-    let ctx = { ctx with def_annot = Some def_annot } in
+    let ctx = { ctx with local_env = def_env; def_annot = Some def_annot } in
     match aux with
     | DEF_register (DEC_aux (DEC_reg (typ, id, None), _)) ->
         let ctyp = ctyp_of_typ ctx typ in
@@ -2309,7 +2330,7 @@ module Make (C : CONFIG) = struct
         )
     | DEF_register (DEC_aux (DEC_reg (typ, id, Some exp), _)) ->
         let ctyp = ctyp_of_typ ctx typ in
-        let aexp = C.optimize_anf ctx (no_shadow ctx.letbind_ids (anf exp)) in
+        let aexp = C.optimize_anf ctx (no_shadow (letbind_ids ctx) (anf exp)) in
         let setup, call, cleanup = compile_aexp ctx aexp in
         let instrs = setup @ [call (CL_id (name id, ctyp))] @ cleanup in
         let instrs = unique_names instrs in
@@ -2352,8 +2373,9 @@ module Make (C : CONFIG) = struct
         let tdef_opt, ctx = compile_type_def ctx type_def in
         (List.map (fun tdef -> CDEF_aux (CDEF_type tdef, def_annot)) (Option.to_list tdef_opt), ctx)
     | DEF_let (LB_aux (LB_val (pat, exp), _)) ->
+        let debug_attr = get_def_attribute "jib_debug" def_annot in
         let ctyp = ctyp_of_typ ctx (typ_of_pat pat) in
-        let aexp = C.optimize_anf ctx (no_shadow ctx.letbind_ids (anf exp)) in
+        let aexp = C.optimize_anf ctx (no_shadow (letbind_ids ctx) (anf exp)) in
         let setup, call, cleanup = compile_aexp ctx aexp in
         let apat = anf_pat ~global:true pat in
         let gs = ngensym () in
@@ -2362,7 +2384,9 @@ module Make (C : CONFIG) = struct
           compile_match ctx apat (V_id (gs, ctyp)) (fun l b -> ijump l b end_label)
         in
         let gs_setup, gs_cleanup = ([idecl (exp_loc exp) ctyp gs], [iclear ctyp gs]) in
-        let bindings = List.map (fun (id, typ) -> (id, ctyp_of_typ ctx typ)) (apat_globals apat) in
+        let bindings =
+          List.map (fun (id, env, typ) -> (id, ctyp_of_typ { ctx with local_env = env } typ)) (apat_globals apat)
+        in
         let n = !letdef_count in
         incr letdef_count;
         let instrs =
@@ -2372,11 +2396,17 @@ module Make (C : CONFIG) = struct
           @ [ilabel end_label]
         in
         let instrs = unique_names instrs in
+        if Option.is_some debug_attr then (
+          prerr_endline Util.("IR for letbind " ^ string_of_int n |> yellow |> bold |> clear);
+          prerr_endline
+            (Util.string_of_list ", " (fun (id, ctyp) -> string_of_id id ^ " : " ^ string_of_ctyp ctyp) bindings);
+          List.iter (fun instr -> prerr_endline (string_of_instr instr)) instrs
+        );
         ( [CDEF_aux (CDEF_let (n, bindings, instrs), def_annot)],
           {
             ctx with
             letbinds = n :: ctx.letbinds;
-            letbind_ids = IdSet.fold (fun id -> NameSet.add (name id)) (pat_ids pat) ctx.letbind_ids;
+            letbind_ctyps = List.fold_left (fun ids (id, ctyp) -> Bindings.add id ctyp ids) ctx.letbind_ctyps bindings;
           }
         )
     (* Only DEF_default that matters is default Order, but all order
@@ -2955,6 +2985,32 @@ module Make (C : CONFIG) = struct
       cdefs
     |> List.concat
 
+  let is_def_constraint = function DEF_aux (DEF_constraint _, _) -> true | _ -> false
+
+  let first_env final_env = function [] -> final_env | DEF_aux (_, def_annot) :: _ -> def_annot.env
+
+  (* This function helps optimise abstract types in the following way,
+     if we see:
+
+     {@sail[
+       type x = ...
+       constraint ...
+       constraint ...
+     ]}
+
+     Then we move the typing environment from after the final
+     constraint up to the [type], ensuring we pick the most optimised
+     representation for that type declaration we safely can. *)
+  let rec move_constraint_contexts final_env acc = function
+    | DEF_aux (DEF_type tdef, def_annot) :: defs ->
+        let constraints, rest = Util.take_drop is_def_constraint defs in
+        let env = first_env final_env rest in
+        move_constraint_contexts final_env
+          (List.rev constraints @ [DEF_aux (DEF_type tdef, { def_annot with env })] @ acc)
+          rest
+    | def :: defs -> move_constraint_contexts final_env (def :: acc) defs
+    | [] -> List.rev acc
+
   let compile_ast ctx ast =
     let module G = Graph.Make (Callgraph.Node) in
     let g = Callgraph.graph_of_ast ast in
@@ -2994,7 +3050,8 @@ module Make (C : CONFIG) = struct
           let defs, ctx = compile_def n total ctx def in
           (n + 1, defs :: chunks, ctx)
         )
-        (1, [], ctx) ast.defs
+        (1, [], ctx)
+        (move_constraint_contexts ctx.tc_env [] ast.defs)
     in
     let cdefs = List.concat (List.rev chunks) in
 

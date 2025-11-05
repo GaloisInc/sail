@@ -88,16 +88,14 @@ let simp_infix_typ = function
   | ATyp_aux (ATyp_infix [(IT_primary typ, _, _)], _) -> typ
   | typ -> typ
 
-let rec same_pat_ops (Id_aux (_, l) as op) = function
-  | ((Id_aux (_, l') as op'), _) :: ops ->
-     if string_of_id op = string_of_id op' then
-       same_pat_ops op ops
+let rec same_pat_ops op l = function
+  | (op', l', _) :: ops ->
+     if op = op' then
+       same_pat_ops op l ops
      else
        raise (Reporting.err_syntax_loc
-                (Parse_ast.Hint (string_of_id op ^ " here", l, l'))
-                (Printf.sprintf "Use parenthesis to group operators in pattern. Operators %s and %s found at same level."
-                                (string_of_id op)
-                                (string_of_id op')))
+                (Parse_ast.Hint (op ^ " here", l, l'))
+                (Printf.sprintf "Use parenthesis to group operators in pattern. Operators %s and %s found at same level." op op'))
   | [] -> ()
 
 let mk_typ t n m = ATyp_aux (t, loc n m)
@@ -109,15 +107,6 @@ let mk_measure meas n m = Measure_aux (meas, loc n m)
 let mk_lit l n m = L_aux (l, loc n m)
 let mk_lit_exp l n m = mk_exp (E_lit (mk_lit l n m)) n m
 let mk_typschm tq t n m = TypSchm_aux (TypSchm_ts (tq, t), loc n m)
-
-let mk_typschm_opt ts n m = TypSchm_opt_aux (
-                                  TypSchm_opt_some (
-                                      ts
-                                    ),
-                                  loc n m
-                                )
-
-let mk_typschm_opt_none = TypSchm_opt_aux (TypSchm_opt_none, Unknown)
 
 let mk_sd s n m = SD_aux (s, loc n m)
 let mk_ir r n m = BF_aux (r, loc n m)
@@ -218,6 +207,7 @@ let set_syntax_deprecated l =
 %token Repeat Until While Do Mutual Var Ref Configuration TerminationMeasure Instantiation Impl Private
 %token InternalPLet InternalReturn InternalAssume
 %token Forwards Backwards
+%token From To Downto
 
 %nonassoc Then
 %nonassoc Else
@@ -231,10 +221,11 @@ let set_syntax_deprecated l =
 %token <string> Id TyVar
 %token <Nat_big_num.num> Num
 %token <string> String Bin Hex Real
+%token <string list> MultilineString
 
 %token <string> Eq EqGt Unit Colon
 
-%token <string> Doc
+%token <string> DocBlock DocLine
 
 %token <string> OpId
 
@@ -265,64 +256,50 @@ separated_nonempty_list_trailing(SEP, ELEM):
   | x=ELEM; SEP; xs=separated_nonempty_list_trailing(SEP, ELEM)
     { x :: xs }
 
-id:
-  | Id { mk_id (Id $1) $startpos $endpos }
+separated_list_trailing(SEP, ELEM):
+  |
+    { [] }
+  | x=ELEM
+    { [x] }
+  | x=ELEM; SEP; xs=separated_list_trailing(SEP, ELEM)
+    { x :: xs }
 
-  | Op OpId { mk_id (Operator $2) $startpos $endpos }
+id:
+  | Id       { mk_id (Id $1) $startpos $endpos }
+  | Op OpId  { mk_id (Operator $2) $startpos $endpos }
   | Op Minus { mk_id (Operator "-") $startpos $endpos }
-  | Op Bar { mk_id (Operator "|") $startpos $endpos }
+  | Op Bar   { mk_id (Operator "|") $startpos $endpos }
   | Op Caret { mk_id (Operator "^") $startpos $endpos }
-  | Op Star { mk_id (Operator "*") $startpos $endpos }
+  | Op Star  { mk_id (Operator "*") $startpos $endpos }
 
 op_no_caret:
-  | OpId
-    { mk_id (Id $1) $startpos $endpos }
-  | Minus
-    { mk_id (Id "-") $startpos $endpos }
-  | Bar
-    { mk_id (Id "|") $startpos $endpos }
-  | Star
-    { mk_id (Id "*") $startpos $endpos }
-  | In
-    { mk_id (Id "in") $startpos $endpos }
+  | OpId  { $1 }
+  | Minus { "-" }
+  | Bar   { "|" }
+  | Star  { "*" }
+  | In    { "in" }
 
 op:
-  | OpId
-    { mk_id (Id $1) $startpos $endpos }
-  | Minus
-    { mk_id (Id "-") $startpos $endpos }
-  | Bar
-    { mk_id (Id "|") $startpos $endpos }
-  | Caret
-    { mk_id (Id "^") $startpos $endpos }
-  | Star
-    { mk_id (Id "*") $startpos $endpos }
-  | In
-    { mk_id (Id "in") $startpos $endpos }
+  | OpId  { $1 }
+  | Minus { "-" }
+  | Bar   { "|" }
+  | Star  { "*" }
+  | In    { "in" }
+  | Caret { "^" }
 
 exp_op:
-  | OpId
-    { mk_id (Id $1) $startpos $endpos }
-  | Minus
-    { mk_id (Id "-") $startpos $endpos }
-  | Bar
-    { mk_id (Id "|") $startpos $endpos }
-  | At
-    { mk_id (Id "@") $startpos $endpos }
-  | ColonColon
-    { mk_id (Id "::") $startpos $endpos }
-  | Caret
-    { mk_id (Id "^") $startpos $endpos }
-  | Star
-    { mk_id (Id "*") $startpos $endpos }
+  | OpId       { $1 }
+  | Minus      { "-" }
+  | Bar        { "|" }
+  | At         { "@" }
+  | ColonColon { "::" }
+  | Caret      { "^" }
+  | Star       { "*" }
 
 pat_op:
-  | At
-    { mk_id (Id "@") $startpos $endpos }
-  | ColonColon
-    { mk_id (Id "::") $startpos $endpos }
-  | Caret
-    { mk_id (Id "^") $startpos $endpos }
+  | At         { "@" }
+  | ColonColon { "::" }
+  | Caret      { "^" }
 
 id_list:
   | id
@@ -334,10 +311,16 @@ kid:
   | TyVar
     { mk_kid $1 $startpos $endpos }
 
-num_list:
+negative_num:
   | Num
+    { $1 }
+  | Minus Num
+    { Big_int.negate $2 }
+
+num_list:
+  | negative_num Comma?
     { [$1] }
-  | Num Comma num_list
+  | negative_num Comma num_list
     { $1 :: $3 }
 
 tyarg:
@@ -352,11 +335,11 @@ typ_eof:
   |
     { [] }
   | TwoCaret
-    { [(IT_prefix (mk_id (Id "pow2") $startpos $endpos), $startpos, $endpos)] }
+    { [(IT_prefix "pow2", $startpos, $endpos)] }
   | Minus
-    { [(IT_prefix (mk_id (Id "negate") $startpos $endpos), $startpos, $endpos)] }
+    { [(IT_prefix "negate", $startpos, $endpos)] }
   | Star
-    { [(IT_prefix (mk_id (Id "__deref") $startpos $endpos), $startpos, $endpos)] }
+    { [(IT_prefix "__deref", $startpos, $endpos)] }
 
 postfix_typ:
   | t = atomic_typ
@@ -510,26 +493,26 @@ typschm_eof:
     { $1 }
 
 pat1:
-  | p = atomic_pat; ps = list(op = pat_op; q = atomic_pat { (op, q) })
+  | p = atomic_pat; ps = list(op = pat_op; q = atomic_pat { (op, loc $startpos(op) $endpos(op), q) })
     { match ps with
       | [] -> p
-      | (op, _) :: rest ->
-         same_pat_ops op rest;
-         match string_of_id op with
+      | (op, l, _) :: rest ->
+         same_pat_ops op l rest;
+         match op with
          | "@" ->
-            mk_pat (P_vector_concat (p :: List.map snd ps)) $startpos $endpos
+            mk_pat (P_vector_concat (p :: List.map (fun (_, _, x) -> x) ps)) $startpos $endpos
          | "::" ->
             let rec cons_list = function
-              | [(_, x)] -> x
-              | ((_, x) :: xs) -> mk_pat (P_cons (x, cons_list xs)) (first_pat_range $startpos x) $endpos
+              | [(_, _, x)] -> x
+              | ((_, _, x) :: xs) -> mk_pat (P_cons (x, cons_list xs)) (first_pat_range $startpos x) $endpos
               | _ -> assert false in
             mk_pat (P_cons (p, cons_list ps)) $startpos $endpos
          | "^" ->
-            mk_pat (P_string_append (p :: List.map snd ps)) $startpos $endpos
+            mk_pat (P_string_append (p :: List.map (fun (_, _, x) -> x) ps)) $startpos $endpos
          | _ ->
             raise (Reporting.err_syntax_loc
                      (loc $startpos $endpos)
-                     ("Unrecognised operator " ^ string_of_id op ^ " in pattern."))
+                     ("Unrecognised operator " ^ op ^ " in pattern."))
     }
 
 pat:
@@ -551,7 +534,7 @@ pat_list:
 atomic_pat:
   | Under
     { mk_pat (P_wild) $startpos $endpos }
-  | lit
+  | negative_lit
     { mk_pat (P_lit $1) $startpos $endpos }
   | id
     { mk_pat (P_id $1) $startpos $endpos }
@@ -610,8 +593,16 @@ lit:
     { mk_lit (L_hex $1) $startpos $endpos }
   | String
     { mk_lit (L_string $1) $startpos $endpos }
+  | MultilineString
+    { mk_lit (L_multiline_string $1) $startpos $endpos }
   | Real
     { mk_lit (L_real $1) $startpos $endpos }
+
+negative_lit:
+  | Minus Num
+    { mk_lit (L_num (Big_int.negate $2)) $startpos $endpos }
+  | lit
+    { $1 }
 
 exp_eof:
   | exp Eof
@@ -623,6 +614,36 @@ internal_loop_measure:
     { mk_measure Measure_none $startpos $endpos }
   | TerminationMeasure Lcurly exp Rcurly
     { mk_measure (Measure_some $3) $startpos $endpos }
+
+%inline to_or_downto:
+  | To
+    { "to" }
+  | Downto
+    { "downto" }
+
+loop_exp:
+  | v=id; From; f=exp; To; t=exp; By; step=exp; In; order=typ
+    { (v, f, t, step, order ) }
+  | v=id; From; f=exp; ord=to_or_downto; t=exp; By; step=exp
+    { let order =
+        if ord = "to" then
+          ATyp_aux (ATyp_inc, loc $startpos(ord) $endpos(ord))
+        else
+          ATyp_aux (ATyp_dec, loc $startpos(ord) $endpos(ord))
+      in
+      (v, f, t, step, order)
+    }
+  | v=id; From; f=exp; ord=to_or_downto; t=exp
+    {
+      let step = mk_lit_exp (L_num (Big_int.of_int 1)) $startpos $endpos in
+      let order =
+        if ord = "to" then
+          ATyp_aux (ATyp_inc, loc $startpos(ord) $endpos(ord))
+        else
+          ATyp_aux (ATyp_dec, loc $startpos(ord) $endpos(ord))
+      in
+      (v, f, t, step, order)
+    }
 
 exp:
   | exp0
@@ -657,39 +678,21 @@ exp:
     { mk_exp (E_match ($2, $4)) $startpos $endpos }
   | Try exp Catch Lcurly case_list Rcurly
     { mk_exp (E_try ($2, $5)) $startpos $endpos }
-  | Foreach Lparen id Id atomic_exp Id atomic_exp By atomic_exp In typ Rparen exp
-    { if $4 <> "from" then
-       raise (Reporting.err_syntax_loc (loc $startpos $endpos) ("Missing \"from\" in foreach loop"));
-      if $6 <> "to" then
-       raise (Reporting.err_syntax_loc (loc $startpos $endpos) ("Missing \"to\" in foreach loop"));
-      mk_exp (E_for ($3, $5, $7, $9, $11, $13)) $startpos $endpos }
-  | Foreach Lparen id Id atomic_exp Id atomic_exp By atomic_exp Rparen exp
-    { if $4 <> "from" then
-       raise (Reporting.err_syntax_loc (loc $startpos $endpos) ("Missing \"from\" in foreach loop"));
-      if $6 <> "to" && $6 <> "downto" then
-       raise (Reporting.err_syntax_loc (loc $startpos $endpos) ("Missing \"to\" or \"downto\" in foreach loop"));
-      let order =
-        if $6 = "to"
-        then ATyp_aux(ATyp_inc,loc $startpos($6) $endpos($6))
-        else ATyp_aux(ATyp_dec,loc $startpos($6) $endpos($6))
-      in
-      mk_exp (E_for ($3, $5, $7, $9, order, $11)) $startpos $endpos }
-  | Foreach Lparen id Id atomic_exp Id atomic_exp Rparen exp
-    { if $4 <> "from" then
-       raise (Reporting.err_syntax_loc (loc $startpos $endpos) ("Missing \"from\" in foreach loop"));
-      if $6 <> "to" && $6 <> "downto" then
-       raise (Reporting.err_syntax_loc (loc $startpos $endpos) ("Missing \"to\" or \"downto\" in foreach loop"));
-      let step = mk_lit_exp (L_num (Big_int.of_int 1)) $startpos $endpos in
-      let ord =
-        if $6 = "to"
-        then ATyp_aux(ATyp_inc,loc $startpos($6) $endpos($6))
-        else ATyp_aux(ATyp_dec,loc $startpos($6) $endpos($6))
-      in
-      mk_exp (E_for ($3, $5, $7, step, ord, $9)) $startpos $endpos }
+  | Foreach Lparen loop_exp Rparen Do? exp
+    { let (v, f, t, step, order) = $3 in
+      mk_exp (E_for (v, f, t, step, order, $6)) $startpos $endpos }
+  | Foreach loop_exp Lcurly block Rcurly
+    { let (v, f, t, step, order) = $2 in
+      mk_exp (E_for (v, f, t, step, order, mk_exp (E_block $4) $startpos($3) $endpos($5))) $startpos $endpos }
+  | Foreach loop_exp Do exp
+    { let (v, f, t, step, order) = $2 in
+      mk_exp (E_for (v, f, t, step, order, $4)) $startpos $endpos }
   | Repeat internal_loop_measure exp Until exp
     { mk_exp (E_loop (Until, $2, $5, $3)) $startpos $endpos }
   | While internal_loop_measure exp Do exp
     { mk_exp (E_loop (While, $2, $3, $5)) $startpos $endpos }
+  | While internal_loop_measure exp Lcurly block Rcurly
+    { mk_exp (E_loop (While, $2, $3, mk_exp (E_block $5) $startpos($4) $endpos($6))) $startpos $endpos }
 
   /* Debugging only, will be rejected in initial_check if debugging isn't on */
   | InternalPLet pat Eq exp In exp
@@ -706,11 +709,11 @@ operators in expressions, with both left, right and non-associative operators */
   |
     { [] }
   | TwoCaret
-    { [(IT_prefix (mk_id (Id "pow2") $startpos $endpos), $startpos, $endpos)] }
+    { [(IT_prefix "pow2", $startpos, $endpos)] }
   | Minus
-    { [(IT_prefix (mk_id (Id "negate") $startpos $endpos), $startpos, $endpos)] }
+    { [(IT_prefix "negate", $startpos, $endpos)] }
   | Star
-    { [(IT_prefix (mk_id (Id "__deref") $startpos $endpos), $startpos, $endpos)] }
+    { [(IT_prefix "__deref", $startpos, $endpos)] }
 
 exp0:
   | prefix = prefix_op;
@@ -725,7 +728,13 @@ case:
     { mk_pexp (Pat_exp (p, body)) $startpos $endpos }
   | p = pat; If_; guard = exp; EqGt; body = exp
     { mk_pexp (Pat_when (p, guard, body)) $startpos $endpos }
-  | a = attribute; Lparen; c = case; Rparen
+  | a = attribute; c = attr_case
+    { mk_pexp (Pat_attribute (fst a, snd a, c)) $startpos $endpos(a) }
+
+attr_case:
+  | Lparen; c = case; Rparen
+    { c }
+  | a = attribute; c = attr_case
     { mk_pexp (Pat_attribute (fst a, snd a, c)) $startpos $endpos(a) }
 
 case_list:
@@ -824,9 +833,9 @@ atomic_exp:
 
 fexp_exp:
   | atomic_exp Eq exp
-    { mk_exp (E_app_infix ($1, mk_id (Id "=") $startpos($2) $endpos($2), $3)) $startpos $endpos }
+    { mk_exp (E_app_infix ($1, mk_id (Operator "=") $startpos($2) $endpos($2), $3)) $startpos $endpos }
   | id
-    { mk_exp (E_app_infix (mk_exp (E_id $1) $startpos $endpos, mk_id (Id "=") $startpos $endpos, mk_exp (E_id $1) $startpos $endpos)) $startpos $endpos }
+    { mk_exp (E_app_infix (mk_exp (E_id $1) $startpos $endpos, mk_id (Operator "=") $startpos $endpos, mk_exp (E_id $1) $startpos $endpos)) $startpos $endpos }
 
 fexp_exp_list:
   | fexp_exp
@@ -863,19 +872,21 @@ attribute_data_key_value:
     { (key, value) }
 
 attribute_data:
-  | Lcurly; kvs = separated_list(Comma, attribute_data_key_value) Rcurly
+  | Lcurly; kvs = separated_list_trailing(Comma, attribute_data_key_value) Rcurly
     { AD_aux (AD_object kvs, loc $startpos $endpos) }
   | n = Num
     { AD_aux (AD_num n, loc $startpos $endpos) }
   | s = String
     { AD_aux (AD_string s, loc $startpos $endpos) }
+  | lines = MultilineString
+    { AD_aux (AD_string (String.concat "\n" (List.map Scanf.unescaped lines)), loc $startpos $endpos) }
   | id = Id
     { AD_aux (AD_string id, loc $startpos $endpos) }
   | True
     { AD_aux (AD_bool true, loc $startpos $endpos) }
   | False
     { AD_aux (AD_bool false, loc $startpos $endpos) }
-  | Lsquare; xs = separated_list(Comma, attribute_data) Rsquare
+  | Lsquare; xs = separated_list_trailing(Comma, attribute_data) Rsquare
     { AD_aux (AD_list xs, loc $startpos $endpos) }
 
 attribute:
@@ -888,12 +899,18 @@ attribute_data_eof:
   | d = attribute_data; Eof
     { d }
 
+doc_comment:
+  | str = DocBlock
+    { { contents = str; comment_type = Comment_block } }
+  | str = DocLine
+    { { contents = str; comment_type = Comment_line } }
+
 funcl_annotation:
   | visibility = Private
     { (fun funcl -> FCL_aux (FCL_private funcl, loc $startpos(visibility) $endpos(visibility))) }
   | attr = attribute
     { (fun funcl -> FCL_aux (FCL_attribute (fst attr, snd attr, funcl), loc $startpos(attr) $endpos(attr))) }
-  | doc = Doc
+  | doc = doc_comment
     { (fun funcl -> FCL_aux (FCL_doc (doc, funcl), loc $startpos(doc) $endpos(doc))) }
 
 funcl_patexp:
@@ -965,8 +982,12 @@ atomic_index_range:
     { mk_ir (BF_range ($2, $4)) $startpos $endpos }
 
 r_id_def:
-  | id Colon index_range
-    { $1, $3 }
+  | doc = doc_comment; r = r_id_def
+    { Ann_doc (doc, r, loc $startpos(doc) $endpos(doc)) }
+  | attr = attribute; r = r_id_def
+    { Ann_attribute (fst attr, snd attr, r, loc $startpos(attr) $endpos(attr)) }
+  | n = id; Colon; r = index_range
+    { Ann_item (n, r) }
 
 r_def_body:
   | r_id_def
@@ -975,6 +996,12 @@ r_def_body:
     { [$1] }
   | r_id_def Comma r_def_body
     { $1 :: $3 }
+
+bitfield_def_body:
+  | Lcurly Rcurly
+    { [] }
+  | Lcurly r_def_body Rcurly
+    { $2 }
 
 param_kopt:
   | kid Colon kind
@@ -1021,7 +1048,7 @@ type_def:
   | Struct id typaram Eq Lcurly struct_fields Rcurly
     { mk_td (TD_record ($2, $3, $6)) $startpos $endpos }
   | Enum id Eq enum_bar
-    { mk_td (TD_enum ($2, [], $4)) $startpos $endpos }
+    { mk_td (TD_enum ($2, [], List.map (fun (id, exp) -> Ann_item id, exp) $4)) $startpos $endpos }
   | Enum id Eq Lcurly enum Rcurly
     { mk_td (TD_enum ($2, [], $5)) $startpos $endpos }
   | Enum id With enum_functions Eq Lcurly enum Rcurly
@@ -1034,8 +1061,8 @@ type_def:
     { mk_td (TD_variant ($2, TypQ_aux (TypQ_tq [], loc $endpos($2) $startpos($3)), $5, false)) $startpos $endpos }
   | Union id typaram Eq Lcurly type_unions Rcurly
     { mk_td (TD_variant ($2, $3, $6, false)) $startpos $endpos }
-  | Bitfield id Colon typ Eq Lcurly r_def_body Rcurly
-    { mk_td (TD_bitfield ($2, $4, $7)) $startpos $endpos }
+  | Bitfield id Colon typ Eq bitfield_def_body
+    { mk_td (TD_bitfield ($2, $4, $6)) $startpos $endpos }
 
 enum_functions:
   | id MinusGt typ Comma enum_functions
@@ -1045,6 +1072,14 @@ enum_functions:
   | id MinusGt typ
     { [($1, $3)] }
 
+enum_member:
+  | doc = doc_comment; e = enum_member
+    { Ann_doc (doc, e, loc $startpos(doc) $endpos(doc)) }
+  | attr = attribute; e = enum_member
+    { Ann_attribute (fst attr, snd attr, e, loc $startpos(attr) $endpos(attr)) }
+  | e = id
+    { Ann_item e }
+
 enum_bar:
   | id
     { [($1, None)] }
@@ -1052,18 +1087,22 @@ enum_bar:
     { ($1, None) :: $3 }
 
 enum:
-  | id Comma?
+  | enum_member Comma?
     { [($1, None)] }
-  | id EqGt exp Comma?
+  | enum_member EqGt exp Comma?
     { [($1, Some $3)] }
-  | id Comma enum
+  | enum_member Comma enum
     { ($1, None) :: $3 }
-  | id EqGt exp Comma enum
+  | enum_member EqGt exp Comma enum
     { ($1, Some $3) :: $5 }
 
 struct_field:
-  | id Colon typ
-    { ($3, $1) }
+  | doc = doc_comment; f = struct_field
+    { Ann_doc (doc, f, loc $startpos(doc) $endpos(doc)) }
+  | attr = attribute; f = struct_field
+    { Ann_attribute (fst attr, snd attr, f, loc $startpos(attr) $endpos(attr)) }
+  | n = id; Colon; t = typ
+    { Ann_item (n, t) }
 
 struct_fields:
   | struct_field
@@ -1078,7 +1117,7 @@ type_union:
     { Tu_aux (Tu_private tu, loc $startpos(visibility) $endpos(visibility)) }
   | attr = attribute; tu = type_union
     { Tu_aux (Tu_attribute (fst attr, snd attr, tu), loc $startpos(attr) $endpos(attr)) }
-  | doc = Doc; tu = type_union
+  | doc = doc_comment; tu = type_union
     { Tu_aux (Tu_doc (doc, tu), loc $startpos(doc) $endpos(doc)) }
   | id Colon typ
     { Tu_aux (Tu_ty_id ($3, $1), loc $startpos $endpos) }
@@ -1108,26 +1147,25 @@ fun_def_list:
     { $1 :: $2 }
 
 mpat:
-  | p = atomic_mpat; ps = list(op = pat_op; q = atomic_mpat { (op, q) })
+  | p = atomic_mpat; ps = list(op = pat_op; q = atomic_mpat { (op, loc $startpos(op) $endpos(op), q) })
     { match ps with
       | [] -> p
-      | (op, _) :: rest ->
-         same_pat_ops op rest;
-         match string_of_id op with
+      | (op, l, _) :: rest ->
+         same_pat_ops op l rest;
+         match op with
          | "@" ->
-            mk_mpat (MP_vector_concat (p :: List.map snd ps)) $startpos $endpos
+            mk_mpat (MP_vector_concat (p :: List.map (fun (_, _, x) -> x) ps)) $startpos $endpos
          | "::" ->
             let rec cons_list = function
-              | [(_, x)] -> x
-              | ((_, x) :: xs) -> mk_mpat (MP_cons (x, cons_list xs)) (first_mpat_range $startpos x) $endpos
+              | [(_, _, x)] -> x
+              | ((_, _, x) :: xs) -> mk_mpat (MP_cons (x, cons_list xs)) (first_mpat_range $startpos x) $endpos
               | _ -> assert false in
             mk_mpat (MP_cons (p, cons_list ps)) $startpos $endpos
          | "^" ->
-            mk_mpat (MP_string_append (p :: List.map snd ps)) $startpos $endpos
+            mk_mpat (MP_string_append (p :: List.map (fun (_, _, x) -> x) ps)) $startpos $endpos
          | _ ->
-            raise (Reporting.err_syntax_loc
-                     (loc $startpos $endpos)
-                     ("Unrecognised operator " ^ string_of_id op ^ " in mapping pattern."))
+            let l = loc $startpos $endpos in
+            raise (Reporting.err_syntax_loc l ("Unrecognised operator " ^ op ^ " in mapping pattern."))
     }
   | p = atomic_mpat; As; id = id
     { mk_mpat (MP_as (p, id)) $startpos $endpos }
@@ -1139,7 +1177,7 @@ mpat_list:
     { $1 :: $3 }
 
 atomic_mpat:
-  | lit
+  | negative_lit
     { mk_mpat (MP_lit $1) $startpos $endpos }
   | id
     { mk_mpat (MP_id $1) $startpos $endpos }
@@ -1181,7 +1219,7 @@ fmpat:
 mapcl:
   | attr = attribute; mcl = mapcl
     { MCL_aux (MCL_attribute (fst attr, snd attr, mcl), loc $startpos(attr) $endpos(attr)) }
-  | doc = Doc; mcl = mapcl
+  | doc = doc_comment; mcl = mapcl
     { MCL_aux (MCL_doc (doc, mcl), loc $startpos(doc) $endpos(doc)) }
   | mcl = mapcl0
     { mcl }
@@ -1207,9 +1245,9 @@ mapcl_list:
 
 map_def:
   | Mapping id Eq Lcurly mapcl_list Rcurly
-    { mk_map $2 mk_typschm_opt_none $5 $startpos $endpos }
+    { mk_map $2 None $5 $startpos $endpos }
   | Mapping id Colon typschm Eq Lcurly mapcl_list Rcurly
-    { mk_map $2 (mk_typschm_opt $4 $startpos($4) $endpos($4)) $7 $startpos $endpos }
+    { mk_map $2 (Some $4) $7 $startpos $endpos }
 
 let_def:
   | Let_ letbind
@@ -1358,7 +1396,7 @@ def_aux:
   | Impl funcl
     { DEF_impl $2 }
   | Fixity
-    { let (prec, n, op) = $1 in DEF_fixity (prec, n, Id_aux (Id op, loc $startpos $endpos)) }
+    { let (prec, n, op) = $1 in DEF_fixity (prec, n, op) }
   | val_spec_def
     { DEF_val $1 }
   | outcome_spec_def Eq Lcurly defs_list Rcurly
@@ -1395,7 +1433,7 @@ def(AUX):
     { DEF_aux (DEF_private def, loc $startpos(visibility) $endpos(visibility)) }
   | attr = attribute; def = def(AUX)
     { DEF_aux (DEF_attribute (fst attr, snd attr, def), loc $startpos(attr) $endpos(attr)) }
-  | doc = Doc; def = def(AUX)
+  | doc = doc_comment; def = def(AUX)
     { DEF_aux (DEF_doc (doc, def), loc $startpos(doc) $endpos(doc)) }
   | d = AUX
     { DEF_aux (d, loc $startpos(d) $endpos(d)) }

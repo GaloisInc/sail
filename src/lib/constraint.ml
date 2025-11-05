@@ -292,7 +292,7 @@ let load_digests_err path =
           let solution = input_binary_int in_chan in
           known_uniques := DigestMap.add digest (Some solution) !known_uniques
       | _ ->
-          Reporting.warn "" Parse_ast.Unknown "SMT cache file 'z3_problems' is invalid";
+          Reporting.warn "" Parse_ast.Unknown "SMT cache file 'sail_smt_cache' is invalid";
           known_problems := DigestMap.empty;
           known_uniques := DigestMap.empty;
           (* Exit the loop as if we reached the end of the file *)
@@ -542,8 +542,8 @@ let call_smt_solve_bitvector l smt_file smt_vars =
           let prefix = Str.matched_group 1 smt_output in
           let result = Str.matched_group 2 smt_output in
           match prefix with
-          | "#b" -> Some (smt_var, mk_lit (L_bin result))
-          | "#x" -> Some (smt_var, mk_lit (L_hex result))
+          | "#b" -> Some (smt_var, mk_lit (L_bin (Option.get @@ Initial_check.parse_bin_lit result)))
+          | "#x" -> Some (smt_var, mk_lit (L_hex (Option.get @@ Initial_check.parse_hex_lit result)))
           | _ -> raise (Reporting.err_general l "Could not parse bitvector value from SMT solver")
         )
       with Not_found -> None

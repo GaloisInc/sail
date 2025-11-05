@@ -175,6 +175,8 @@ val split3 : ('a * 'b * 'c) list -> 'a list * 'b list * 'c list
 
 val compare_list : ('a -> 'b -> int) -> 'a list -> 'b list -> int
 
+val equal_list : ('a -> 'b -> bool) -> 'a list -> 'b list -> bool
+
 val take : int -> 'a list -> 'a list
 val drop : int -> 'a list -> 'a list
 
@@ -215,6 +217,9 @@ val remove_suffix : string -> string -> string option
     the optimal string alignment distance, which is similar but allows swaps as a single action. *)
 val levenshtein_distance : ?osa:bool -> string -> string -> int
 
+(** Check if all characters in a string satisfy a predicate. String.for_all for OCaml < 4.13. *)
+val string_for_all : (char -> bool) -> string -> bool
+
 (** {2 Files} *)
 
 (** [copy_file src dst] copies file [src] to file [dst]. Only files are supported, no directories. *)
@@ -236,6 +241,10 @@ val same_content_files : string -> string -> bool
 
 (** [read_whole_file filename] reads the contents of the file and returns it as a string. *)
 val read_whole_file : string -> string
+
+(** [relativize_path base target] gives the relative path to the file at [target] from [base]. Both paths are assumed to
+    be paths of files (not directories), and from the same root. *)
+val relativize_path : string -> string -> string
 
 (** {2 Strings} *)
 

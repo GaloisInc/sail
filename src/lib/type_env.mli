@@ -119,6 +119,7 @@ val get_val_spec_opt : id -> t -> ((typquant * typ) * l) option
 val get_val_spec : id -> t -> typquant * typ
 val get_val_specs : t -> (typquant * typ) Bindings.t
 val get_val_spec_orig : id -> t -> typquant * typ
+val has_val_spec : id -> t -> bool
 
 val is_outcome : id -> t -> bool
 val add_outcome : id -> typquant * typ * typquant * id list * t -> t -> t
@@ -156,7 +157,7 @@ val is_newtype : id -> t -> bool
 
 val is_mapping : id -> t -> bool
 
-val add_record : id -> typquant -> (typ * id) list -> t -> t
+val add_record : id -> typquant -> ((id * typ) * unit def_annot) list -> t -> t
 val is_record : id -> t -> bool
 val get_record : id -> t -> typquant * (typ * id) list
 val get_records : t -> (typquant * (typ * id) list) Bindings.t
@@ -258,6 +259,7 @@ val is_toplevel : t -> l option
 (* Well formedness-checks *)
 val wf_typ : at:l -> t -> typ -> unit
 val wf_typ_arg : at:l -> t -> typ_arg -> unit
+val wf_nexp : at:l -> t -> nexp -> unit
 val wf_constraint : at:l -> t -> n_constraint -> unit
 
 (** Some of the code in the environment needs to use the smt solver, which is defined below. To break the circularity

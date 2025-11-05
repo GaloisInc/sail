@@ -138,16 +138,11 @@ type ( 'a,
   e_lit : lit -> 'exp_aux;
   e_typ : Ast.typ * 'exp -> 'exp_aux;
   e_app : id * 'exp list -> 'exp_aux;
-  e_app_infix : 'exp * id * 'exp -> 'exp_aux;
   e_tuple : 'exp list -> 'exp_aux;
   e_if : 'exp * 'exp * 'exp -> 'exp_aux;
   e_for : id * 'exp * 'exp * 'exp * Ast.order * 'exp -> 'exp_aux;
   e_loop : loop * ('exp option * Parse_ast.l) * 'exp * 'exp -> 'exp_aux;
   e_vector : 'exp list -> 'exp_aux;
-  e_vector_access : 'exp * 'exp -> 'exp_aux;
-  e_vector_subrange : 'exp * 'exp * 'exp -> 'exp_aux;
-  e_vector_update : 'exp * 'exp * 'exp -> 'exp_aux;
-  e_vector_update_subrange : 'exp * 'exp * 'exp * 'exp -> 'exp_aux;
   e_vector_append : 'exp * 'exp -> 'exp_aux;
   e_list : 'exp list -> 'exp_aux;
   e_cons : 'exp * 'exp -> 'exp_aux;
@@ -168,7 +163,7 @@ type ( 'a,
   e_var : 'lexp * 'exp * 'exp -> 'exp_aux;
   e_internal_plet : 'pat * 'exp * 'exp -> 'exp_aux;
   e_internal_return : 'exp -> 'exp_aux;
-  e_internal_value : Value.value -> 'exp_aux;
+  e_internal_value : Value_type.value -> 'exp_aux;
   e_internal_assume : n_constraint * 'exp -> 'exp_aux;
   e_aux : 'exp_aux * 'a annot -> 'exp;
   le_id : id -> 'lexp_aux;

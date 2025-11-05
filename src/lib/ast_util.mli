@@ -78,6 +78,8 @@ val attribute_data_object : attribute_data -> (string * attribute_data) list opt
 
 val attribute_data_bool : attribute_data -> bool option
 
+val attribute_data_num : attribute_data -> Big_int.num option
+
 val attribute_data_string : attribute_data -> string option
 
 val attribute_data_string_with_loc : attribute_data -> (string * Parse_ast.l) option
@@ -100,13 +102,20 @@ val get_attributes : uannot -> (l * string * attribute_data option) list
 val find_attribute_opt : string -> (l * string * attribute_data option) list -> (l * attribute_data option) option
 
 val mk_def_annot :
-  ?doc:string -> ?attrs:(l * string * attribute_data option) list -> ?visibility:visibility -> l -> 'a -> 'a def_annot
+  ?doc:Parse_ast.doc_comment ->
+  ?attrs:(l * string * attribute_data option) list ->
+  ?visibility:visibility ->
+  l ->
+  'a ->
+  'a def_annot
 
 val uannot_of_def_annot : 'a def_annot -> uannot
 
 val add_def_attribute : l -> string -> attribute_data option -> 'a def_annot -> 'a def_annot
 
 val get_def_attribute : string -> 'a def_annot -> (l * attribute_data option) option
+
+val get_def_attributes : 'a def_annot -> (l * string * attribute_data option) list
 
 val remove_def_attribute : string -> 'a def_annot -> 'a def_annot
 
@@ -151,15 +160,23 @@ val lvar_typ : ?loc:l -> 'a lvar -> 'a
 val is_order_inc : order -> bool
 val is_order_dec : order -> bool
 
+val is_and_bool : id -> bool
+val is_or_bool : id -> bool
+
 (** {1 Functions for building and destructuring untyped AST elements} *)
 
 (** {2 Functions for building untyped AST elements} *)
 
+val mk_and_bool : ?loc:l -> unit -> id
+val mk_or_bool : ?loc:l -> unit -> id
 val mk_id : ?loc:l -> string -> id
+val mk_operator : ?loc:l -> string -> id
 val mk_kid : ?loc:l -> string -> kid
 val mk_nc : ?loc:l -> n_constraint_aux -> n_constraint
 val mk_nexp : ?loc:l -> nexp_aux -> nexp
 val mk_exp : ?loc:l -> uannot exp_aux -> uannot exp
+val mk_id_exp : ?loc:l -> id -> uannot exp
+val mk_infix_exp : ?loc:l -> uannot exp -> id -> uannot exp -> uannot exp
 val mk_pat : ?loc:l -> uannot pat_aux -> uannot pat
 val mk_mpat : ?loc:l -> uannot mpat_aux -> uannot mpat
 val mk_pexp : ?loc:l -> uannot pexp_aux -> uannot pexp
@@ -181,6 +198,13 @@ val mk_fexp : ?loc:l -> id -> uannot exp -> uannot fexp
 val mk_letbind : ?loc:l -> uannot pat -> uannot exp -> uannot letbind
 val mk_kopt : ?loc:l -> kind_aux -> kid -> kinded_id
 val mk_def : ?loc:l -> ('a, 'b) def_aux -> 'b -> ('a, 'b) def
+
+val is_vector_syntax : id -> bool
+
+val vector_access : ?loc:l -> 'a exp -> 'a exp -> 'a exp_aux
+val vector_subrange : ?loc:l -> 'a exp -> 'a exp -> 'a exp -> 'a exp_aux
+val vector_update : ?loc:l -> 'a exp -> 'a exp -> 'a exp -> 'a exp_aux
+val vector_update_subrange : ?loc:l -> 'a exp -> 'a exp -> 'a exp -> 'a exp -> 'a exp_aux
 
 (** Mapping patterns are a subset of patterns, so we can always convert one to the other *)
 val pat_of_mpat : 'a mpat -> 'a pat
@@ -452,8 +476,9 @@ val def_loc : ('a, 'b) def -> Parse_ast.l
     Note: For debugging and error messages only - not guaranteed to produce parseable Sail, or even print all language
     constructs! *)
 
-val string_of_order : order -> string
+type digit_case = Lowercase | Uppercase
 
+val string_of_order : order -> string
 val string_of_id : id -> string
 val string_of_kid : kid -> string
 val string_of_kind_aux : kind_aux -> string
@@ -467,6 +492,8 @@ val string_of_kinded_id : kinded_id -> string
 val string_of_quant_item : quant_item -> string
 val string_of_typquant : typquant -> string
 val string_of_typschm : typschm -> string
+val string_of_hex_lit : ?group_separator:string -> case:digit_case -> hex_digit non_empty list -> string
+val string_of_bin_lit : ?group_separator:string -> bin_digit non_empty list -> string
 val string_of_lit : lit -> string
 val string_of_exp : 'a exp -> string
 val string_of_pexp : 'a pexp -> string
@@ -490,9 +517,6 @@ val id_of_dec_spec : 'a dec_spec -> id
 val natural_id_compare : id -> id -> int
 val natural_sort_ids : id list -> id list
 
-val deinfix : id -> id
-val infix_swap : id -> id
-
 val id_of_kid : kid -> id
 val kid_of_id : id -> kid
 
@@ -502,6 +526,12 @@ val remove_id_suffix : id -> string -> id option
 val prepend_kid : string -> kid -> kid
 
 (** {1 Misc functions} *)
+
+val non_empty_singleton : 'a list -> 'a non_empty list
+val non_empty_for_all : ('a -> bool) -> 'a non_empty -> bool
+
+val hex_lit_length : hex_digit non_empty list -> int
+val bin_lit_length : bin_digit non_empty list -> int
 
 val nexp_identical : nexp -> nexp -> bool
 val is_nexp_constant : nexp -> bool
@@ -565,7 +595,7 @@ val val_spec_ids : ('a, 'b) def list -> IdSet.t
 val record_ids : ('a, 'b) def list -> IdSet.t
 
 val get_scattered_union_clauses : id -> ('a, 'b) def list -> type_union list
-val get_scattered_enum_clauses : id -> ('a, 'b) def list -> id list
+val get_scattered_enum_clauses : id -> ('a, 'b) def list -> (id * unit def_annot) list
 
 val pat_ids : 'a pat -> IdSet.t
 

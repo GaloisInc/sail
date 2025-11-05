@@ -54,6 +54,8 @@ open Ast_defs
 open Ast_util
 open Parse_ast.Attribute_data
 
+open Coq_def_annot
+
 module Reformatter = Pretty_print_sail.Printer (struct
   let insert_braces = true
   let resugar = true
@@ -76,6 +78,15 @@ let hash_file filename = process_file Digest.string filename |> Digest.to_hex
 type embedding = Plain | Base64
 
 let embedding_string = function Plain -> "plain" | Base64 -> "base64"
+
+let get_module_path env =
+  let project_opt = Type_check.Env.get_modules env in
+  let mod_id = Type_check.Env.get_current_module env in
+  match project_opt with
+  | Some project when Project.valid_module_id project mod_id ->
+      let parents = Project.get_parents mod_id project in
+      Some (List.map (fun id -> fst (Project.module_name project id)) (parents @ [mod_id]))
+  | _ -> None
 
 let json_of_bindings b f =
   Bindings.bindings b |> List.map (fun (key, elem) -> (string_of_id key, f elem)) |> fun elements -> `Assoc elements
@@ -135,7 +146,8 @@ let json_of_hyperlink = function
           ("loc", `List [`Int c1; `Int c2]);
         ]
 
-let json_of_hyperlinks = function [] -> `Null | links -> `List (List.map json_of_hyperlink links)
+let json_of_comment (comment : Parse_ast.doc_comment option) =
+  match comment with Some { contents; _ } -> [("comment", `String contents)] | None -> []
 
 let hyperlinks_from_def files def =
   let open Rewriter in
@@ -233,7 +245,8 @@ type 'a function_clause_doc = {
   wavedrom : string option;
   guard_source : location_or_raw option;
   body_source : location_or_raw;
-  comment : string option;
+  module_path : string list option;
+  comment : Parse_ast.doc_comment option;
   splits : location_or_raw Bindings.t option;
   attributes : (string * attribute_data option) list;
 }
@@ -246,11 +259,11 @@ let json_of_function_clause_doc docinfo =
        ("pattern", json_of_pat docinfo.pat);
      ]
     @ (match docinfo.wavedrom with Some w -> [("wavedrom", `String w)] | None -> [])
-    @ (match docinfo.comment with Some s -> [("comment", `String s)] | None -> [])
     @ (match docinfo.guard_source with Some s -> [("guard", json_of_location_or_raw s)] | None -> [])
     @ [("body", json_of_location_or_raw docinfo.body_source)]
+    @ (match docinfo.module_path with Some mods -> [("path", `List (List.map (fun m -> `String m) mods))] | None -> [])
     @ (match docinfo.splits with Some s -> [("splits", json_of_bindings s json_of_location_or_raw)] | None -> [])
-    @ json_of_attributes docinfo.attributes
+    @ json_of_comment docinfo.comment @ json_of_attributes docinfo.attributes
     )
 
 type 'a function_doc = Multiple_clauses of 'a function_clause_doc list | Single_clause of 'a function_clause_doc
@@ -267,6 +280,7 @@ type 'a mapping_clause_doc = {
   right : 'a pat option;
   right_wavedrom : string option;
   body : location_or_raw option;
+  comment : Parse_ast.doc_comment option;
   attributes : (string * attribute_data option) list;
 }
 
@@ -278,7 +292,7 @@ let json_of_mapping_clause_doc docinfo =
     @ (match docinfo.right with Some p -> [("right", json_of_pat p)] | None -> [])
     @ (match docinfo.right_wavedrom with Some w -> [("right_wavedrom", `String w)] | None -> [])
     @ (match docinfo.body with Some s -> [("body", json_of_location_or_raw s)] | None -> [])
-    @ json_of_attributes docinfo.attributes
+    @ json_of_comment docinfo.comment @ json_of_attributes docinfo.attributes
     )
 
 type 'a mapping_doc = 'a mapping_clause_doc list
@@ -288,13 +302,14 @@ let json_of_mapping_doc docinfos = `List (List.map json_of_mapping_clause_doc do
 type valspec_doc = {
   source : location_or_raw;
   type_source : location_or_raw;
+  comment : Parse_ast.doc_comment option;
   attributes : (string * attribute_data option) list;
 }
 
 let json_of_valspec_doc docinfo =
   `Assoc
     ([("source", json_of_location_or_raw docinfo.source); ("type", json_of_location_or_raw docinfo.type_source)]
-    @ json_of_attributes docinfo.attributes
+    @ json_of_comment docinfo.comment @ json_of_attributes docinfo.attributes
     )
 
 type type_def_doc = location_or_raw
@@ -305,6 +320,7 @@ type register_doc = {
   source : location_or_raw;
   type_source : location_or_raw;
   exp_source : location_or_raw option;
+  comment : Parse_ast.doc_comment option;
   attributes : (string * attribute_data option) list;
 }
 
@@ -312,28 +328,26 @@ let json_of_register_doc docinfo =
   `Assoc
     ([("source", json_of_location_or_raw docinfo.source); ("type", json_of_location_or_raw docinfo.type_source)]
     @ (match docinfo.exp_source with None -> [] | Some source -> [("exp", json_of_location_or_raw source)])
-    @ json_of_attributes docinfo.attributes
+    @ json_of_comment docinfo.comment @ json_of_attributes docinfo.attributes
     )
 
 type let_doc = {
   source : location_or_raw;
   exp_source : location_or_raw;
+  comment : Parse_ast.doc_comment option;
   attributes : (string * attribute_data option) list;
 }
 
 let json_of_let_doc docinfo =
   `Assoc
     ([("source", json_of_location_or_raw docinfo.source); ("exp", json_of_location_or_raw docinfo.exp_source)]
-    @ json_of_attributes docinfo.attributes
+    @ json_of_comment docinfo.comment @ json_of_attributes docinfo.attributes
     )
 
-type anchor_doc = { source : location_or_raw; comment : string option }
+type anchor_doc = { source : location_or_raw; comment : Parse_ast.doc_comment option }
 
 let json_of_anchor_doc docinfo =
-  `Assoc
-    ([("source", json_of_location_or_raw docinfo.source)]
-    @ match docinfo.comment with Some c -> [("comment", `String c)] | None -> []
-    )
+  `Assoc ([("source", json_of_location_or_raw docinfo.source)] @ json_of_comment docinfo.comment)
 
 type 'a linkable = { doc : 'a; links : hyperlink list; module_path : string list option }
 
@@ -431,9 +445,9 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
 
   let get_doc_comment def_annot =
     Option.map
-      (fun comment ->
+      (fun ({ contents; comment_type } : Parse_ast.doc_comment) ->
         let conf = Converter.default_config ~loc:def_annot.loc in
-        Converter.convert conf comment
+        ({ contents = encode (Converter.convert conf contents); comment_type } : Parse_ast.doc_comment)
       )
       def_annot.doc_comment
 
@@ -441,7 +455,8 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
     {
       source = doc_loc (fst vs_annot) Type_check.strip_val_spec Reformatter.doc_spec vs;
       type_source = doc_loc ts_l (fun ts -> ts) Reformatter.doc_typschm ts;
-      attributes = List.map (fun (_, attr, data) -> (attr, data)) def_annot.attrs;
+      comment = get_doc_comment def_annot;
+      attributes = List.map (fun (_, attr_info) -> attr_info) def_annot.attrs;
     }
 
   let docinfo_for_type_def (TD_aux (_, annot) as td) =
@@ -453,14 +468,16 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
       type_source = doc_loc typ_l (fun typ -> typ) Reformatter.doc_typ typ;
       exp_source =
         Option.map (fun (E_aux (_, (l, _)) as exp) -> doc_loc l Type_check.strip_exp Reformatter.doc_exp exp) exp;
-      attributes = List.map (fun (_, attr, data) -> (attr, data)) def_annot.attrs;
+      comment = get_doc_comment def_annot;
+      attributes = List.map (fun (_, attr_info) -> attr_info) def_annot.attrs;
     }
 
   let docinfo_for_let def_annot (LB_aux (LB_val (_, exp), annot) as lbind) =
     {
       source = doc_loc (fst annot) Type_check.strip_letbind Reformatter.doc_letbind lbind;
       exp_source = doc_loc (exp_loc exp) Type_check.strip_exp Reformatter.doc_exp exp;
-      attributes = List.map (fun (_, attr, data) -> (attr, data)) def_annot.attrs;
+      comment = get_doc_comment def_annot;
+      attributes = List.map (fun (_, attr_info) -> attr_info) def_annot.attrs;
     }
 
   let funcl_splits ~ast ~error_loc:l attrs exp =
@@ -483,7 +500,9 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
                 (fun splits member ->
                   let checked_member = Type_check.check_exp env (mk_exp (E_id member)) enum_typ in
                   let substs = (Bindings.singleton split_id checked_member, KBindings.empty) in
-                  let propagated, _ = Constant_propagation.const_prop "doc" ast IdSet.empty substs Bindings.empty exp in
+                  let propagated, _ =
+                    Constant_propagation.const_prop "doc" env ast IdSet.empty substs Bindings.empty exp
+                  in
                   let propagated_doc =
                     Raw (pretty_printer (Type_check.strip_exp propagated) |> Document.to_string |> encode)
                   in
@@ -505,7 +524,7 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
     let comment = match comment with None -> get_doc_comment (fst annot) | comment -> comment in
 
     (* Try to use the inner attributes if we have no outer attributes. *)
-    let attrs = match outer_annot with None -> (fst annot).attrs | Some outer -> (fst outer).attrs in
+    let attrs = get_def_attributes @@ fst @@ match outer_annot with None -> annot | Some outer -> outer in
 
     let source = doc_loc (fst annot).loc Type_check.strip_funcl Reformatter.doc_funcl clause in
     let pat, guard, exp =
@@ -518,20 +537,23 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
     in
     let body_source =
       match exp with
-      | E_aux (E_block (exp :: exps), _) ->
+      | E_aux (E_block (exp :: exps), (block_loc, _)) -> (
           let first_loc = exp_loc exp in
           let last_loc = exp_loc (Util.last (exp :: exps)) in
-          begin
-            match (Reporting.simp_loc first_loc, Reporting.simp_loc last_loc) with
-            | Some (p1, _), Some (_, p2) when p1.pos_fname = p2.pos_fname && Filename.is_relative p1.pos_fname ->
-                (* Make sure the first line is indented correctly *)
+          match (Reporting.simp_loc first_loc, Reporting.simp_loc last_loc, Reporting.simp_loc block_loc) with
+          | Some (p1, _), Some (_, p2), Some (block_p1, block_p2)
+            when p1.pos_fname = p2.pos_fname && Filename.is_relative p1.pos_fname ->
+              if block_p1.pos_lnum < p1.pos_lnum then
+                (* Make sure the first line is indented correctly, when it's on a different line to the start of the block. *)
                 doc_lexing_pos { p1 with pos_cnum = p1.pos_bol } p2
-            | _, _ ->
-                let block = Type_check.strip_exp exp :: List.map Type_check.strip_exp exps in
-                Raw (Reformatter.doc_block block |> Document.to_string |> encode)
-          end
+              else doc_lexing_pos block_p1 block_p2
+          | _, _, _ ->
+              let block = Type_check.strip_exp exp :: List.map Type_check.strip_exp exps in
+              Raw (Reformatter.doc_block block |> Document.to_string |> encode)
+        )
       | _ -> doc_loc (exp_loc exp) Type_check.strip_exp Reformatter.doc_exp exp
     in
+    let module_path = get_module_path (Type_check.env_of exp) in
 
     let splits = funcl_splits ~ast ~error_loc:(pat_loc pat) attrs exp in
 
@@ -542,7 +564,8 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
       wavedrom = Wavedrom.of_pattern ~labels:None pat |> Option.map encode;
       guard_source;
       body_source;
-      comment = Option.map encode comment;
+      module_path;
+      comment;
       splits;
       attributes = List.map (fun (_, attr, data) -> (attr, data)) attrs;
     }
@@ -568,7 +591,9 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
   let docinfo_for_mapcl n (MCL_aux (aux, (def_annot, _)) as clause) =
     let source = doc_loc def_annot.loc Type_check.strip_mapcl Reformatter.doc_mapcl clause in
     let parse_wavedrom_attr = function _, Some (AD_aux (AD_string s, _)) -> Some s | _, Some _ | _, None -> None in
-    let wavedrom_attr = Option.bind (find_attribute_opt "wavedrom" def_annot.attrs) parse_wavedrom_attr in
+    let wavedrom_attr =
+      Option.bind (find_attribute_opt "wavedrom" @@ get_def_attributes def_annot) parse_wavedrom_attr
+    in
 
     let left, left_wavedrom, right, right_wavedrom, body =
       match aux with
@@ -598,7 +623,8 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
       right;
       right_wavedrom = Option.map encode right_wavedrom;
       body;
-      attributes = List.map (fun (_, attr, data) -> (attr, data)) def_annot.attrs;
+      comment = get_doc_comment def_annot;
+      attributes = List.map (fun (_, attr_info) -> attr_info) def_annot.attrs;
     }
 
   let included_mapping_clause files (MCL_aux (_, (def_annot, _))) = included_loc files def_annot.loc
@@ -606,15 +632,6 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
   let docinfo_for_mapdef files (MD_aux (MD_mapping (_, _, clauses), _)) =
     let clauses = List.filter (included_mapping_clause files) clauses in
     match clauses with [] -> None | _ -> Some (List.mapi docinfo_for_mapcl clauses)
-
-  let get_module_path def_annot =
-    let project_opt = Type_check.Env.get_modules def_annot.env in
-    let mod_id = Type_check.Env.get_current_module def_annot.env in
-    match project_opt with
-    | Some project when Project.valid_module_id project mod_id ->
-        let parents = Project.get_parents mod_id project in
-        Some (List.map (fun id -> fst (Project.module_name project id)) (parents @ [mod_id]))
-    | _ -> None
 
   let docinfo_for_ast ~files ~hyperlinks ast =
     let gitinfo =
@@ -641,7 +658,7 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
     let skip_file file = if List.exists (same_file file) files then false else initial_skip in
     let skipping = function true :: _ -> true | _ -> false in
     let docinfo_for_def (docinfo, skips) (DEF_aux (aux, def_annot) as def) =
-      let module_path = get_module_path def_annot in
+      let module_path = get_module_path def_annot.env in
       let links = hyperlinks files def in
       match aux with
       (* Maintain a stack of booleans, for each file if it was not
@@ -718,7 +735,7 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
           match aux with
           | DEF_pragma ("anchor", Pragma_line (arg, _)) ->
               let links = hyperlinks files def in
-              let module_path = get_module_path def_annot in
+              let module_path = get_module_path def_annot.env in
               let anchor_info =
                 { source = doc_loc l Type_check.strip_def Reformatter.doc_def def; comment = def_annot.doc_comment }
               in

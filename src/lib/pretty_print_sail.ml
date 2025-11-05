@@ -60,17 +60,28 @@ end
 module Printer (Config : PRINT_CONFIG) = struct
   let doc_op symb a b = infix 2 1 symb a b
 
-  let doc_id (Id_aux (id_aux, _)) = string (match id_aux with Id v -> v | Operator op -> "operator " ^ op)
+  let doc_id (Id_aux (id_aux, _)) =
+    string
+      (match id_aux with And_bool -> "and_bool" | Or_bool -> "or_bool" | Id v -> v | Operator op -> "operator " ^ op)
 
   let doc_kid kid = string (Ast_util.string_of_kid kid)
 
   let doc_attr attr arg = string (string_of_attribute attr arg) ^^ space
 
   let doc_def_annot def_annot =
-    (match def_annot.doc_comment with Some str -> string "/*!" ^^ string str ^^ string "*/" ^^ hardline | _ -> empty)
+    ( match def_annot.Coq_def_annot.doc_comment with
+    | Some { contents; comment_type } -> (
+        match comment_type with
+        | Comment_block -> string "/*!" ^^ string contents ^^ string "*/" ^^ hardline
+        | Comment_line ->
+            let ls = String.split_on_char '\n' contents in
+            string "///" ^^ separate_map (hardline ^^ string "///") string ls ^^ hardline
+      )
+    | _ -> empty
+    )
     ^^ ( match def_annot.attrs with
        | [] -> empty
-       | attrs -> separate_map hardline (fun (_, attr, arg) -> doc_attr attr arg) attrs ^^ hardline
+       | attrs -> separate_map hardline (fun (_, (attr, arg)) -> doc_attr attr arg) attrs ^^ hardline
        )
     ^^ match def_annot.visibility with Private _ -> string "private" ^^ space | Public -> empty
 
@@ -273,8 +284,8 @@ module Printer (Config : PRINT_CONFIG) = struct
       | L_true -> "true"
       | L_false -> "false"
       | L_num i -> Big_int.to_string i
-      | L_hex n -> "0x" ^ n
-      | L_bin n -> "0b" ^ n
+      | L_hex hex -> "0x" ^ string_of_hex_lit ~case:Uppercase hex
+      | L_bin bin -> "0b" ^ string_of_bin_lit bin
       | L_real r -> r
       | L_undef -> "undefined"
       | L_string s -> "\"" ^ String.escaped s ^ "\""
@@ -332,35 +343,25 @@ module Printer (Config : PRINT_CONFIG) = struct
         (fun r (x, y) -> Bindings.add x y r)
         Bindings.empty
         [
-          (mk_id "^", (InfixR, 8));
-          (mk_id "*", (InfixL, 7));
-          (mk_id "/", (InfixL, 7));
-          (mk_id "%", (InfixL, 7));
-          (mk_id "+", (InfixL, 6));
-          (mk_id "-", (InfixL, 6));
-          (mk_id "!=", (Infix, 4));
-          (mk_id ">", (Infix, 4));
-          (mk_id "<", (Infix, 4));
-          (mk_id ">=", (Infix, 4));
-          (mk_id "<=", (Infix, 4));
-          (mk_id "==", (Infix, 4));
-          (mk_id "&", (InfixR, 3));
-          (mk_id "|", (InfixR, 2));
+          (mk_operator "^", (InfixR, 8));
+          (mk_operator "*", (InfixL, 7));
+          (mk_operator "/", (InfixL, 7));
+          (mk_operator "%", (InfixL, 7));
+          (mk_operator "+", (InfixL, 6));
+          (mk_operator "-", (InfixL, 6));
+          (mk_operator "!=", (Infix, 4));
+          (mk_operator ">", (Infix, 4));
+          (mk_operator "<", (Infix, 4));
+          (mk_operator ">=", (Infix, 4));
+          (mk_operator "<=", (Infix, 4));
+          (mk_operator "==", (Infix, 4));
+          (mk_operator "&", (InfixR, 3));
+          (mk_operator "|", (InfixR, 2));
         ]
     in
     ref (fixities' : (prec * int) Bindings.t)
 
   type 'a vector_update = VU_single of 'a exp * 'a exp | VU_range of 'a exp * 'a exp * 'a exp
-
-  let rec get_vector_updates (E_aux (e_aux, _) as exp) =
-    match e_aux with
-    | E_vector_update (exp1, exp2, exp3) ->
-        let input, updates = get_vector_updates exp1 in
-        (input, updates @ [VU_single (exp2, exp3)])
-    | E_vector_update_subrange (exp1, exp2, exp3, exp4) ->
-        let input, updates = get_vector_updates exp1 in
-        (input, updates @ [VU_range (exp2, exp3, exp4)])
-    | _ -> (exp, [])
 
   let get_overloaded_info uannot =
     let open Util.Option_monad in
@@ -378,12 +379,52 @@ module Printer (Config : PRINT_CONFIG) = struct
     | P_aux (P_id _, _), E_aux (E_typ (typ, exp), annot) when Config.resugar -> (P_aux (P_typ (typ, pat), annot), exp)
     | _, _ -> (pat, binding)
 
-  let rec doc_exp (E_aux (e_aux, (l, uannot)) as exp) =
+  type 'a notation_part = Hole of int * 'a | Part of document
+
+  let parse_notation_attr (_, attr_data_opt) =
+    let open Util.Option_monad in
+    let open Parse_ast.Attribute_data in
+    let* attr_data = attr_data_opt in
+    let* obj = attribute_data_object attr_data in
+    let* level = Option.bind (List.assoc_opt "level" obj) attribute_data_num in
+    let* parts = Option.bind (List.assoc_opt "syntax" obj) attribute_data_list in
+    let parse_part = function
+      | AD_aux (AD_num n, _) -> Some (Hole (Big_int.to_int n, ()))
+      | AD_aux (AD_string str, _) -> Some (Part (separate_map space string (String.split_on_char ' ' str)))
+      | _ -> None
+    in
+    let* parts = Util.option_all (List.map parse_part parts) in
+    Some (Big_int.to_int level, parts)
+
+  let attach_to_holes exps parts =
+    let append p = function Some ps -> Some (ps @ [p]) | None -> None in
+    List.fold_left
+      (fun (exps, result) part ->
+        match part with
+        | Part d -> (exps, append (Part d) result)
+        | Hole (n, _) -> (
+            match exps with [] -> ([], None) | e :: es -> (es, append (Hole (n, e)) result)
+          )
+      )
+      (exps, Some []) parts
+    |> snd
+
+  type uannot_fmt = {
+    overloaded : (string * bool) option;
+    is_setter : bool;
+    doc : document -> document;
+    notation : (int * unit notation_part list) option;
+  }
+
+  (* This function consumes the uannot attached to an expression and
+     renders its printable form. To prevent bugs, this function
+     should always be used to shadow the consumed expression. *)
+  let consume_exp_uannot ~atomic (E_aux (aux, (l, uannot))) =
     let uannot, overloaded =
       if Config.resugar then (
         match get_overloaded_info uannot with
         | Some overloaded -> (remove_attribute "overloaded" uannot, Some overloaded)
-        | _ -> (uannot, None)
+        | None -> (uannot, None)
       )
       else (uannot, None)
     in
@@ -391,16 +432,36 @@ module Printer (Config : PRINT_CONFIG) = struct
       if Config.resugar && Option.is_some (get_attribute "setter" uannot) then (remove_attribute "setter" uannot, true)
       else (uannot, false)
     in
-    let uannot = if Config.hide_attributes then empty_uannot else uannot in
-    concat_map (fun (_, attr, arg) -> doc_attr attr arg) (get_attributes uannot)
-    ^^
+    let uannot, notation =
+      if Config.resugar then (
+        match get_attribute "notation" uannot with
+        | Some notation -> (remove_attribute "notation" uannot, parse_notation_attr notation)
+        | None -> (uannot, None)
+      )
+      else (uannot, None)
+    in
+    let doc =
+      if Config.hide_attributes then fun d -> d
+      else (
+        match get_attributes uannot with
+        | [] -> fun d -> d
+        | attrs ->
+            let attrs_doc = concat_map (fun (_, attr, arg) -> doc_attr attr arg) (get_attributes uannot) in
+            fun d -> if atomic then parens (attrs_doc ^^ d) else attrs_doc ^^ d
+      )
+    in
+    (* Once we've extracted all the printing information from a
+       uannot, we want to make sure we never print it again, so return
+       the expression with a stripped uannot. *)
+    (E_aux (aux, (l, empty_uannot)), { overloaded; is_setter; doc; notation })
+
+  let rec doc_exp exp =
+    let (E_aux (e_aux, (l, _)) as exp), uannot_fmt = consume_exp_uannot ~atomic:false exp in
+    uannot_fmt.doc
+    @@
     match e_aux with
     | E_block [] -> string "()"
     | E_block exps -> group (lbrace ^^ nest 4 (hardline ^^ doc_block exps) ^^ hardline ^^ rbrace)
-    (* This is mostly for the -convert option *)
-    | E_app_infix (x, id, y) when Id.compare (mk_id "quot") id == 0 ->
-        separate space [doc_atomic_exp x; string "/"; doc_atomic_exp y]
-    | E_app_infix _ -> doc_infix 0 exp
     | E_tuple exps -> parens (separate_map (comma ^^ space) doc_exp exps)
     | E_if (if_exp, then_exp, (E_aux (E_if (_, _, _), _) as else_exp)) when Config.insert_braces ->
         separate space [string "if"; doc_exp if_exp; string "then"]
@@ -466,9 +527,9 @@ module Printer (Config : PRINT_CONFIG) = struct
                   (separate (break 1)
                      [
                        doc_id id;
-                       string "from " ^^ doc_atomic_exp exp1;
-                       string "to " ^^ doc_atomic_exp exp2;
-                       string "by " ^^ doc_atomic_exp exp3;
+                       string "from " ^^ doc_exp exp1;
+                       string "to " ^^ doc_exp exp2;
+                       string "by " ^^ doc_exp exp3;
                        string "in " ^^ doc_ord order;
                      ]
                   )
@@ -486,25 +547,30 @@ module Printer (Config : PRINT_CONFIG) = struct
     | E_internal_assume (nc, exp) -> doc_let_style_general "internal_assume" (parens (doc_nc nc)) None exp
     | E_app (id, exps) -> begin
         let handle_setter id otherwise =
-          if is_setter && List.length exps >= 2 then (
+          if uannot_fmt.is_setter && List.length exps >= 2 then (
             let lexp = doc_id id ^^ parens (separate_map (comma ^^ space) doc_exp (Util.butlast exps)) in
             separate space [lexp; equals; doc_exp (Util.last exps)]
           )
           else Lazy.force otherwise
         in
-        match (overloaded, exps) with
-        | Some (name, true), [x; y] -> doc_exp (E_aux (E_app_infix (x, mk_id name, y), (l, uannot)))
-        | Some (name, false), _ ->
-            handle_setter (mk_id name) (lazy (doc_exp (E_aux (E_app (mk_id name, exps), (l, uannot)))))
-        | None, [x; y] when Config.resugar && match id with Id_aux (Operator _, _) -> true | _ -> false ->
-            doc_exp (E_aux (E_app_infix (x, infix_swap id, y), (l, uannot)))
-        | None, [v; n] when Config.resugar && Id.compare id (mk_id "vector_access") = 0 ->
-            doc_atomic_exp v ^^ char '[' ^^ doc_exp n ^^ char ']'
-        | None, [v; n; m] when Config.resugar && Id.compare id (mk_id "vector_subrange") = 0 ->
-            doc_atomic_exp v ^^ char '[' ^^ doc_exp n ^^ space ^^ string ".." ^^ space ^^ doc_exp m ^^ char ']'
-        | _, _ -> handle_setter id (lazy (doc_atomic_exp exp))
+        match uannot_fmt.notation with
+        | Some (level, parts) -> (
+            match attach_to_holes exps parts with Some parts -> concat_map doc_part parts | None -> doc_atomic_exp exp
+          )
+        | None -> (
+            match (uannot_fmt.overloaded, exps) with
+            | Some (name, true), [x; y] -> doc_exp (E_aux (E_app (mk_operator name, [x; y]), (l, empty_uannot)))
+            | Some (name, false), _ ->
+                handle_setter (mk_id name) (lazy (doc_exp (E_aux (E_app (mk_id name, exps), (l, empty_uannot)))))
+            | None, [x; y]
+              when Config.resugar && match id with Id_aux ((Operator _ | And_bool | Or_bool), _) -> true | _ -> false ->
+                doc_infix 0 exp
+            | _, _ -> handle_setter id (lazy (doc_atomic_exp exp))
+          )
       end
     | _ -> doc_atomic_exp exp
+
+  and doc_part = function Part d -> d | Hole (0, exp) -> doc_exp exp | Hole (n, exp) -> doc_infix n exp
 
   and doc_let_style keyword lhs rhs body = doc_let_style_general keyword lhs (Some rhs) body
 
@@ -520,50 +586,72 @@ module Printer (Config : PRINT_CONFIG) = struct
   and doc_measure (Measure_aux (m_aux, _)) =
     match m_aux with Measure_none -> [] | Measure_some exp -> [string "termination_measure"; braces (doc_exp exp)]
 
-  and doc_infix n (E_aux (e_aux, _) as exp) =
-    match e_aux with
-    | E_app_infix (l, op, r) when n < 10 -> begin
-        try
-          match Bindings.find op !fixities with
-          | Infix, m when m >= n -> separate space [doc_infix (m + 1) l; doc_id op; doc_infix (m + 1) r]
-          | Infix, m -> parens (separate space [doc_infix (m + 1) l; doc_id op; doc_infix (m + 1) r])
-          | InfixL, m when m >= n -> separate space [doc_infix m l; doc_id op; doc_infix (m + 1) r]
-          | InfixL, m -> parens (separate space [doc_infix m l; doc_id op; doc_infix (m + 1) r])
-          | InfixR, m when m >= n -> separate space [doc_infix (m + 1) l; doc_id op; doc_infix m r]
-          | InfixR, m -> parens (separate space [doc_infix (m + 1) l; doc_id op; doc_infix m r])
-        with Not_found -> parens (separate space [doc_atomic_exp l; doc_id op; doc_atomic_exp r])
-      end
-    | _ -> doc_atomic_exp exp
+  and doc_infix n exp_orig =
+    let (E_aux (e_aux, (l, _)) as exp), uannot_fmt = consume_exp_uannot ~atomic:false exp_orig in
+    if Option.is_some uannot_fmt.notation then doc_atomic_exp exp_orig
+    else
+      uannot_fmt.doc
+      @@
+      match e_aux with
+      | E_app (id, exps) when Option.is_some uannot_fmt.overloaded ->
+          let name, is_infix = Option.get uannot_fmt.overloaded in
+          if is_infix then doc_infix n (E_aux (E_app (mk_operator name, exps), (l, empty_uannot)))
+          else doc_atomic_exp (E_aux (E_app (mk_id name, exps), (l, empty_uannot)))
+      | E_app ((Id_aux (Operator s, _) as op), [x; y]) when n < 10 -> (
+          match Bindings.find_opt op !fixities with
+          | Some (Infix, m) when m >= n -> separate space [doc_infix (m + 1) x; string s; doc_infix (m + 1) y]
+          | Some (Infix, m) -> parens (separate space [doc_infix (m + 1) x; string s; doc_infix (m + 1) y])
+          | Some (InfixL, m) when m >= n -> separate space [doc_infix m x; string s; doc_infix (m + 1) y]
+          | Some (InfixL, m) -> parens (separate space [doc_infix m x; string s; doc_infix (m + 1) y])
+          | Some (InfixR, m) when m >= n -> separate space [doc_infix (m + 1) x; string s; doc_infix m y]
+          | Some (InfixR, m) -> parens (separate space [doc_infix (m + 1) x; string s; doc_infix m y])
+          | None -> parens (separate space [doc_atomic_exp x; string s; doc_atomic_exp y])
+        )
+      | _ -> doc_atomic_exp exp
 
-  and doc_atomic_exp (E_aux (e_aux, (_, uannot)) as exp) =
-    match e_aux with
-    | E_typ (typ, exp) -> separate space [doc_atomic_exp exp; colon; doc_typ typ]
-    | E_lit lit -> doc_lit lit
-    | E_id id -> doc_id id
-    | E_ref id -> string "ref" ^^ space ^^ doc_id id
-    | E_field (exp, id) -> doc_atomic_exp exp ^^ dot ^^ doc_id id
-    | E_config key -> string "config" ^^ space ^^ separate_map dot string key
-    | E_sizeof (Nexp_aux (Nexp_var kid, _)) -> doc_kid kid
-    | E_sizeof nexp -> string "sizeof" ^^ parens (doc_nexp nexp)
-    (* Format a function with a unit argument as f() rather than f(()) *)
-    | E_app (id, [E_aux (E_lit (L_aux (L_unit, _)), _)]) -> doc_id id ^^ string "()"
-    | E_app (id, exps) -> doc_id id ^^ parens (separate_map (comma ^^ space) doc_exp exps)
-    | E_constraint nc -> string "constraint" ^^ parens (doc_nc nc)
-    | E_assert (exp1, E_aux (E_lit (L_aux (L_string "", _)), _)) -> string "assert" ^^ parens (doc_exp exp1)
-    | E_assert (exp1, exp2) -> string "assert" ^^ parens (doc_exp exp1 ^^ comma ^^ space ^^ doc_exp exp2)
-    | E_exit exp -> string "exit" ^^ parens (doc_exp exp)
-    | E_vector_access (exp1, exp2) -> doc_atomic_exp exp1 ^^ brackets (doc_exp exp2)
-    | E_vector_subrange (exp1, exp2, exp3) ->
-        doc_atomic_exp exp1 ^^ brackets (separate space [doc_exp exp2; string ".."; doc_exp exp3])
-    | E_vector exps -> brackets (separate_map (comma ^^ space) doc_exp exps)
-    | E_vector_update _ | E_vector_update_subrange _ ->
-        let input, updates = get_vector_updates exp in
-        let updates_doc = separate_map (comma ^^ space) doc_vector_update updates in
-        brackets (separate space [doc_exp input; string "with"; updates_doc])
-    | E_internal_value v ->
-        if !Interactive.opt_interactive then string (Value.string_of_value v |> Util.green |> Util.clear)
-        else string (Value.string_of_value v)
-    | _ -> parens (doc_exp exp)
+  and doc_atomic_exp (E_aux (e_aux, (_, uannot)) as exp_orig) =
+    let (E_aux (e_aux, (l, _)) as exp), uannot_fmt = consume_exp_uannot ~atomic:true exp_orig in
+    if
+      (Option.is_some uannot_fmt.overloaded
+      || match e_aux with E_app (Id_aux ((Operator _ | And_bool | Or_bool), _), _) -> Config.resugar | _ -> false
+      )
+      && Option.is_none uannot_fmt.notation
+    then parens (doc_exp exp_orig)
+    else
+      uannot_fmt.doc
+      @@
+      match e_aux with
+      | E_typ (typ, exp) -> separate space [doc_atomic_exp exp; colon; doc_typ typ]
+      | E_lit lit -> doc_lit lit
+      | E_id id -> doc_id id
+      | E_ref id -> string "ref" ^^ space ^^ doc_id id
+      | E_field (exp, id) -> doc_atomic_exp exp ^^ dot ^^ doc_id id
+      | E_config key -> string "config" ^^ space ^^ separate_map dot string key
+      | E_sizeof (Nexp_aux (Nexp_var kid, _)) -> doc_kid kid
+      | E_sizeof nexp -> string "sizeof" ^^ parens (doc_nexp nexp)
+      (* Format a function with a unit argument as f() rather than f(()) *)
+      | E_app (id, [E_aux (E_lit (L_aux (L_unit, _)), _)]) -> doc_id id ^^ string "()"
+      | E_app (id, exps) -> (
+          let as_function () = doc_id id ^^ parens (separate_map (comma ^^ space) doc_exp exps) in
+          match uannot_fmt.notation with
+          | Some (level, parts) -> (
+              match attach_to_holes exps parts with
+              | Some parts ->
+                  let doc = concat_map doc_part parts in
+                  if level >= 10 then doc else parens doc
+              | None -> as_function ()
+            )
+          | None -> as_function ()
+        )
+      | E_constraint nc -> string "constraint" ^^ parens (doc_nc nc)
+      | E_assert (exp1, E_aux (E_lit (L_aux (L_string "", _)), _)) -> string "assert" ^^ parens (doc_exp exp1)
+      | E_assert (exp1, exp2) -> string "assert" ^^ parens (doc_exp exp1 ^^ comma ^^ space ^^ doc_exp exp2)
+      | E_exit exp -> string "exit" ^^ parens (doc_exp exp)
+      | E_vector exps -> brackets (separate_map (comma ^^ space) doc_exp exps)
+      | E_internal_value v ->
+          if !Interactive.opt_interactive then string (Value.string_of_value v |> Util.green |> Util.clear)
+          else string (Value.string_of_value v)
+      | _ -> parens (doc_exp exp)
 
   and doc_fexps fexps = separate_map (comma ^^ space) doc_fexp fexps
 
@@ -709,7 +797,7 @@ module Printer (Config : PRINT_CONFIG) = struct
         | Some exp -> separate space [string "register"; doc_id id; colon; doc_typ typ; equals; doc_exp exp]
       )
 
-  let doc_field (typ, id) = separate space [doc_id id; colon; doc_typ typ]
+  let doc_field ((id, typ), def_annot) = doc_def_annot def_annot ^^ separate space [doc_id id; colon; doc_typ typ]
 
   let doc_union (Tu_aux (Tu_ty_id (typ, id), def_annot)) =
     doc_def_annot def_annot ^^ separate space [doc_id id; colon; doc_typ typ]
@@ -725,6 +813,8 @@ module Printer (Config : PRINT_CONFIG) = struct
     | A_nexp _ -> space ^^ string sep ^^ space ^^ string "Int"
     | A_bool _ -> space ^^ string sep ^^ space ^^ string "Bool"
     | A_typ _ -> empty
+
+  let doc_enum_member (id, def_annot) = doc_def_annot def_annot ^^ doc_id id
 
   let doc_type_def (TD_aux (td, (l, _))) =
     match td with
@@ -743,9 +833,14 @@ module Printer (Config : PRINT_CONFIG) = struct
         | None ->
             doc_op equals (concat [string "type"; space; doc_id id; doc_typ_arg_kind ":" typ_arg]) (doc_typ_arg typ_arg)
       end
-    | TD_enum (id, ids, _) ->
+    | TD_enum (id, members, _) ->
         separate space
-          [string "enum"; doc_id id; equals; surround 2 0 lbrace (separate_map (comma ^^ break 1) doc_id ids) rbrace]
+          [
+            string "enum";
+            doc_id id;
+            equals;
+            surround 2 0 lbrace (separate_map (comma ^^ break 1) doc_enum_member members) rbrace;
+          ]
     | TD_record (id, TypQ_aux (TypQ_no_forall, _), fields, _) | TD_record (id, TypQ_aux (TypQ_tq [], _), fields, _) ->
         separate space
           [
@@ -779,7 +874,9 @@ module Printer (Config : PRINT_CONFIG) = struct
         in
         separate space [string (if is_newtype then "newtype" else "union"); doc_id id ^^ quant_doc; equals; body]
     | TD_bitfield (id, typ, fields) ->
-        let doc_field (id, range) = separate space [doc_id id; colon; doc_index_range range] in
+        let doc_field ((id, range), def_annot) =
+          doc_def_annot def_annot ^^ separate space [doc_id id; colon; doc_index_range range]
+        in
         doc_op equals
           (separate space [string "bitfield"; doc_id id; colon; doc_typ typ])
           (surround 2 0 lbrace (separate_map (comma ^^ break 1) doc_field fields) rbrace)
@@ -788,7 +885,7 @@ module Printer (Config : PRINT_CONFIG) = struct
     let doc_extern ext =
       match ext with
       | Some ext ->
-          let purity = if ext.pure then string "pure" ^^ space else string "monadic" ^^ space in
+          let purity = if ext.Coq_extern.pure then string "pure" ^^ space else string "monadic" ^^ space in
           let docs =
             List.map
               (fun (backend, rep) -> string (backend ^ ":") ^^ space ^^ utf8string ("\"" ^ String.escaped rep ^ "\""))

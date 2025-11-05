@@ -50,6 +50,8 @@ open Ast
 open Ast_defs
 open Ast_util
 
+val opt_debug_callgraph : string option ref
+
 type node =
   | Register of id
   | Function of id
@@ -99,7 +101,7 @@ val slice_instantiation_types : string -> Type_check.typed_ast -> Type_check.typ
 
 (** Partition definitions into those required for instantiations and everything else *)
 val partition_instantiation_definitions :
-  Type_check.typed_def list -> Type_check.typed_def list * Type_check.typed_def list
+  bool -> Type_check.typed_def list -> Type_check.typed_def list * Type_check.typed_def list
 
 (** Callgraph consisting *only* of calls, not other dependencies. Doesn't rely on types. *)
 

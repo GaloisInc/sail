@@ -87,6 +87,26 @@ let generate_register_id_enum = function
       let reg (typ, id) = string_of_id id in
       ["type register_id = " ^ String.concat " | " (List.map reg registers)]
 
+(* A reasonably printable version of an nexp that we can use in identifiers.  Generally we should
+   just have a constant here, but if not we should try something sensible (e.g., at the time of
+   writing nexp_simp chickens out for powers of two above seven...). *)
+
+let rec id_of_nexp = function Nexp_aux (nexp, _) -> id_of_nexp_aux nexp
+
+and id_of_nexp_aux = function
+  | Nexp_id id -> string_of_id id
+  | Nexp_var kid -> string_of_kid kid
+  | Nexp_constant c -> Big_int.to_string c
+  | Nexp_times (n1, n2) -> id_of_nexp n1 ^ "_times_" ^ id_of_nexp n2
+  | Nexp_sum (n1, n2) -> id_of_nexp n1 ^ "_plus_" ^ id_of_nexp n2
+  | Nexp_minus (n1, n2) -> id_of_nexp n1 ^ "_minus_" ^ id_of_nexp n2
+  | Nexp_app (id, nexps) -> string_of_id id ^ "_" ^ Util.string_of_list "_" id_of_nexp nexps
+  | Nexp_exp n -> "exp_" ^ id_of_nexp n
+  | Nexp_neg n -> "neg_" ^ id_of_nexp n
+  | Nexp_if (i, t, e) ->
+      (* TODO: include constraints if necessary... *)
+      "if_" (* ^ string_of_n_constraint i*) ^ "_then_" ^ id_of_nexp t ^ "_else_" ^ id_of_nexp e
+
 let rec id_of_regtyp builtins (Typ_aux (t, l) as typ) =
   match t with
   | Typ_id id -> id
@@ -94,7 +114,7 @@ let rec id_of_regtyp builtins (Typ_aux (t, l) as typ) =
       let name_arg (A_aux (targ, l)) =
         match targ with
         | A_typ targ -> string_of_id (id_of_regtyp builtins targ)
-        | A_nexp nexp when is_nexp_constant (nexp_simp nexp) -> string_of_nexp (nexp_simp nexp)
+        | A_nexp nexp when is_nexp_constant (nexp_simp nexp) -> id_of_nexp (nexp_simp nexp)
         | _ -> raise (Reporting.err_typ l ("Unsupported register type " ^ string_of_typ typ))
       in
       if IdSet.mem id builtins && not (is_bitvector_typ typ) then id
@@ -111,12 +131,13 @@ let generate_regstate env registers =
         if !opt_type_grouped_regstate then (
           let type_field (typ, id, has_init) =
             let base_typ = regval_base_typ env typ in
-            (function_typ [string_typ] base_typ, regstate_field base_typ)
+            let field_name = regstate_field base_typ in
+            ((field_name, function_typ [string_typ] base_typ), mk_def_annot (id_loc field_name) ())
           in
-          let cmp_id (_, id1) (_, id2) = Id.compare id1 id2 in
+          let cmp_id ((id1, _), _) ((id2, _), _) = Id.compare id1 id2 in
           List.map type_field registers |> List.sort_uniq cmp_id
         )
-        else List.map (fun (t, i, _) -> (t, i)) registers
+        else List.map (fun (t, i, _) -> ((i, t), mk_def_annot (id_loc i) ())) registers
       in
       TD_record (mk_id "regstate", mk_typquant [], fields, false)
     )
@@ -201,7 +222,7 @@ let generate_initial_regstate ctx env ast =
       in
       let typ_subst_typquant tq args typ = List.fold_left2 typ_subst_quant_item typ (quant_items tq) args in
       let add_typ_init_val (defs', vals) = function
-        | TD_enum (id, id1 :: _, _) ->
+        | TD_enum (id, (id1, _) :: _, _) ->
             (* Choose the first value of an enumeration type as default *)
             (defs', Bindings.add id (fun _ -> string_of_id id1) vals)
         | TD_variant (id, tq, Tu_aux (Tu_ty_id (typ1, id1), _) :: _, _) ->
@@ -216,7 +237,7 @@ let generate_initial_regstate ctx env ast =
             (defs', Bindings.add id init_val vals)
         | TD_record (id, tq, fields, _) ->
             let init_val args =
-              let init_field (typ, id) =
+              let init_field ((id, typ), _) =
                 let typ = typ_subst_typquant tq args typ in
                 string_of_id id ^ " = " ^ lookup_init_val vals typ
               in
@@ -899,4 +920,11 @@ let add_register_init_function ctx env ast =
   let fundef = mk_fundef [funcl] in
   let val_spec = mk_val_spec (VS_val_spec (mk_typschm (mk_typquant []) (function_typ [unit_typ] unit_typ), id, None)) in
   let new_defs, env = Type_error.check_defs env [val_spec; fundef] in
+  let drop_init = function
+    | DEF_aux (DEF_register (DEC_aux (DEC_reg (typ, id, Some exp), an)), def_annot) ->
+        let def_annot = add_def_attribute def_annot.loc "initialized_elsewhere" None def_annot in
+        DEF_aux (DEF_register (DEC_aux (DEC_reg (typ, id, None), an)), def_annot)
+    | d -> d
+  in
+  let ast = { ast with defs = List.map drop_init ast.defs } in
   (append_ast_defs ast new_defs, ctx, env)

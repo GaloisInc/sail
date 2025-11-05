@@ -47,6 +47,8 @@
 open Parse_ast
 open Chunk_ast
 
+module IntMap = Util.IntMap
+
 let id_loc (Id_aux (_, l)) = l
 
 let rec map_last f = function
@@ -99,9 +101,13 @@ let fixup_comments ~filename source =
 module PPrintWrapper = struct
   type hardline_type = Required | Desired
 
+  type lineup = Lineup_start | Lineup_point | Lineup_end
+
   type document =
     | Empty
+    | Weak_space
     | Char of char
+    | Lineup_char of lineup * char
     | String of string
     | Utf8string of string
     | Group of document
@@ -111,15 +117,23 @@ module PPrintWrapper = struct
     | Hardline of hardline_type
     | Ifflat of document * document
 
-  type linebreak_info = { hardlines : (int * int * hardline_type) Queue.t; dedents : (int * int * int) Queue.t }
+  type linebreak_info = {
+    hardlines : (int * int * hardline_type) Queue.t;
+    dedents : (int * int * int) Queue.t;
+    weak_spaces : (int * int) Queue.t;
+    lineups : (int * int * lineup) Queue.t;
+  }
 
-  let empty_linebreak_info () = { hardlines = Queue.create (); dedents = Queue.create () }
+  let empty_linebreak_info () =
+    { hardlines = Queue.create (); dedents = Queue.create (); weak_spaces = Queue.create (); lineups = Queue.create () }
 
   let rec to_pprint lb_info =
     let open PPrint in
     function
     | Empty -> empty
+    | Weak_space -> range (fun (lc, _) -> Queue.add lc lb_info.weak_spaces) (char ' ')
     | Char c -> char c
+    | Lineup_char (p, c) -> range (fun ((l, c), _) -> Queue.add (l, c, p) lb_info.lineups) (char c)
     | String s -> string s
     | Utf8string s -> utf8string s
     | Group doc -> group (to_pprint lb_info doc)
@@ -168,6 +182,15 @@ module PPrintWrapper = struct
   let group doc = Group doc
 
   let space = char ' '
+
+  let lineup_start c = Lineup_char (Lineup_start, c)
+
+  let lineup_point c = Lineup_char (Lineup_point, c)
+
+  let lineup_end c = Lineup_char (Lineup_end, c)
+
+  (* A weak_space is like a space, but it is empty when it appears before any non-whitespace character in a line. *)
+  let weak_space = Weak_space
 
   let enclose l r x = l ^^ x ^^ r
 
@@ -316,19 +339,35 @@ let statement_like opts = { opts with statement = true }
 let operator_precedence = function
   | "=" -> (10, precedence 1, nonatomic, 1)
   | ":" -> (0, subatomic, subatomic, 1)
-  | ".." -> (10, atomic, atomic, 0)
-  | "@" -> (6, precedence 5, precedence 6, 1)
+  | ".." -> (10, atomic, atomic, 1)
   | _ -> (10, subatomic, subatomic, 1)
+
+let unary_operator_precedence = function
+  | "throw" -> (0, nonatomic, space)
+  | "return" -> (0, nonatomic, space)
+  | "internal_return" -> (0, nonatomic, space)
+  | "*" -> (0, atomic, empty)
+  | "-" -> (0, atomic, empty)
+  | "2^" -> (10, atomic, empty)
+  | _ -> (10, subatomic, empty)
 
 let max_precedence infix_chunks =
   List.fold_left
     (fun max_prec infix_chunk ->
       match infix_chunk with
+      | Infix_prefix op ->
+          let prec, _, _ = unary_operator_precedence op in
+          max prec max_prec
       | Infix_op op ->
           let prec, _, _, _ = operator_precedence op in
           max prec max_prec
       | _ -> max_prec
     )
+    0 infix_chunks
+
+let longest_operator infix_chunks =
+  List.fold_left
+    (fun max_len infix_chunk -> match infix_chunk with Infix_op op -> max (String.length op) max_len | _ -> max_len)
     0 infix_chunks
 
 let intersperse_operator_precedence = function "@" -> (6, precedence 5) | _ -> (10, subatomic)
@@ -338,21 +377,22 @@ let ternary_operator_precedence = function
   | ":", "=" -> (0, atomic, nonatomic, nonatomic)
   | _ -> (10, subatomic, subatomic, subatomic)
 
-let unary_operator_precedence = function
-  | "throw" -> (0, nonatomic, space)
-  | "return" -> (0, nonatomic, space)
-  | "internal_return" -> (0, nonatomic, space)
-  | "*" -> (10, atomic, empty)
-  | "-" -> (10, atomic, empty)
-  | "2^" -> (10, atomic, empty)
-  | _ -> (10, subatomic, empty)
-
 let can_hang chunks =
   match Queue.peek_opt chunks with
   | Some (Comment (t, _, _, contents, _)) -> (
-      match t with Lexer.Comment_block -> is_single_line_block_comment contents | _ -> false
+      match t with Comment_block -> is_single_line_block_comment contents | _ -> false
     )
   | _ -> true
+
+let can_hang_bracketed chunks =
+  match Queue.peek_opt chunks with
+  | Some (Block _) -> true
+  | Some (Struct_update _) -> true
+  | Some (Match _) -> true
+  | Some (App _) -> true
+  | _ -> false
+
+let is_block chunks = match Queue.peek_opt chunks with Some (Block _) -> true | _ -> false
 
 let opt_delim s = ifflat empty (string s)
 
@@ -363,13 +403,25 @@ let prefix_parens n x y =
 
 let surround_hardline h n b opening contents closing =
   let b = if h then hardline else break b in
-  group (opening ^^ nest n (b ^^ contents) ^^ b ^^ closing)
+  opening ^^ nest n (b ^^ contents) ^^ b ^^ closing
 
-type config = { indent : int; preserve_structure : bool; line_width : int; ribbon_width : float }
+type infix_style = Prefix_lineup | Prefix
 
-let default_config = { indent = 4; preserve_structure = false; line_width = 120; ribbon_width = 1. }
+let infix_style_of_string = function "prefix_lineup" -> Some Prefix_lineup | "prefix" -> Some Prefix | _ -> None
 
-let known_key k = k = "indent" || k = "preserve_structure" || k = "line_width" || k = "ribbon_width"
+type config = {
+  indent : int;
+  preserve_structure : bool;
+  line_width : int;
+  ribbon_width : float;
+  infix_style : infix_style;
+}
+
+let default_config =
+  { indent = 4; preserve_structure = false; line_width = 120; ribbon_width = 1.; infix_style = Prefix_lineup }
+
+let known_key k =
+  k = "indent" || k = "preserve_structure" || k = "line_width" || k = "ribbon_width" || k = "infix_style"
 
 let int_option k = function
   | `Int n -> Some n
@@ -399,6 +451,19 @@ let float_option k = function
         );
       None
 
+let enum_option f k = function
+  | `String s ->
+      let res = f s in
+      if Option.is_none res then
+        Reporting.simple_warn (Printf.sprintf "Argument for key %s was not a recognized setting. Using default value." k);
+      res
+  | json ->
+      Reporting.simple_warn
+        (Printf.sprintf "Argument for key %s must be a string, got %s instead. Using default value." k
+           (Yojson.Safe.to_string json)
+        );
+      None
+
 let get_option ~key:k ~keys:ks ~read ~default:d =
   List.assoc_opt k ks |> (fun opt -> Option.bind opt (read k)) |> Option.value ~default:d
 
@@ -416,6 +481,9 @@ let config_from_json (json : Yojson.Safe.t) =
           get_option ~key:"preserve_structure" ~keys ~read:bool_option ~default:default_config.preserve_structure;
         line_width = get_option ~key:"line_width" ~keys ~read:int_option ~default:default_config.line_width;
         ribbon_width = get_option ~key:"ribbon_width" ~keys ~read:float_option ~default:default_config.ribbon_width;
+        infix_style =
+          get_option ~key:"infix_style" ~keys ~read:(enum_option infix_style_of_string)
+            ~default:default_config.infix_style;
       }
   | _ -> raise (Reporting.err_general Parse_ast.Unknown "Invalid formatting configuration")
 
@@ -446,6 +514,7 @@ let rec can_chunks_list_wrap cqs =
 module Make (Config : CONFIG) = struct
   let indent = Config.config.indent
   let preserve_structure = Config.config.preserve_structure
+  let infix_style = Config.config.infix_style
 
   let rec doc_chunk ?(ungroup_tuple = false) ?(toplevel = false) opts = function
     | Atom s -> string s
@@ -453,13 +522,23 @@ module Make (Config : CONFIG) = struct
     | Delim s -> string s ^^ space
     | Opt_delim s -> opt_delim s
     | String_literal s -> utf8string ("\"" ^ String.escaped s ^ "\"")
-    | App (id, args) ->
-        doc_id id
-        ^^ group
-             (surround indent 0 (char '(')
-                (separate_map softline (doc_chunks (opts |> nonatomic |> expression_like)) args)
-                (char ')')
-             )
+    | Multiline_string_literal lines ->
+        string "\"\"\"" ^^ hardline ^^ separate_map hardline string lines ^^ hardline ^^ string "\"\"\""
+    | Attribute (attr, arg) ->
+        (* Reset opts to defaults, so attributes are always formatted
+          the same no matter where they appear. *)
+        string "$[" ^^ string attr ^^ space ^^ doc_chunks default_opts arg ^^ char ']'
+    | App (id, args) -> (
+        match args with
+        | [] -> doc_id id ^^ string "()"
+        | _ ->
+            doc_id id
+            ^^ group
+                 (surround indent 0 (char '(')
+                    (separate_map softline (doc_chunks (opts |> nonatomic |> expression_like)) args)
+                    (char ')')
+                 )
+      )
     | Tuple (l, r, spacing, args) ->
         let group_fn = if ungroup_tuple then fun x -> x else group in
         group_fn
@@ -477,16 +556,30 @@ module Make (Config : CONFIG) = struct
         if outer_prec > opts.precedence then parens doc else doc
     | Infix_sequence infix_chunks ->
         let outer_prec = max_precedence infix_chunks in
+        let longest_op = longest_operator infix_chunks in
         let doc =
           separate_map empty
             (function
               | Infix_prefix op -> string op
-              | Infix_op op -> space ^^ string op ^^ space
-              | Infix_chunks chunks -> doc_chunks (opts |> atomic |> expression_like) chunks
+              | Infix_op op ->
+                  let op_w = String.length op in
+                  let padding =
+                    match infix_style with
+                    | Prefix_lineup -> ifflat space (repeat (longest_op - op_w + 1) space)
+                    | Prefix -> space
+                  in
+                  break 1 ^^ string op ^^ padding
+              | Infix_chunks chunks ->
+                  let nesting = match infix_style with Prefix_lineup -> longest_op + 1 | Prefix -> indent in
+                  nest nesting (doc_chunks (opts |> atomic |> expression_like) chunks)
               )
             infix_chunks
         in
-        if outer_prec > opts.precedence then parens doc else doc
+        let start_padding =
+          match infix_style with Prefix_lineup -> ifflat empty (repeat (longest_op + 1) space) | Prefix -> empty
+        in
+        let doc = start_padding ^^ doc in
+        group (align (if outer_prec > opts.precedence then parens doc else doc))
     | Binary (lhs, op, rhs) ->
         let outer_prec, lhs_prec, rhs_prec, spacing = operator_precedence op in
         let doc =
@@ -495,30 +588,50 @@ module Make (Config : CONFIG) = struct
             (doc_chunks (opts |> rhs_prec |> expression_like) rhs)
         in
         if outer_prec > opts.precedence then parens doc else doc
-    | Ternary (x, op1, y, op2, z) ->
-        let outer_prec, x_prec, y_prec, z_prec = ternary_operator_precedence (op1, op2) in
-        let doc =
-          prefix indent 1
-            (doc_chunks (opts |> x_prec |> expression_like) x
-            ^^ space ^^ string op1 ^^ space
-            ^^ doc_chunks (opts |> y_prec |> expression_like) y
-            ^^ space ^^ string op2
-            )
-            (doc_chunks (opts |> z_prec |> expression_like) z)
-        in
-        if outer_prec > opts.precedence then parens doc else doc
+    | Vector_binary (lhs, op, rhs) ->
+        infix indent 1 (string op)
+          (doc_chunks (opts |> nonatomic |> expression_like) lhs)
+          (doc_chunks (opts |> nonatomic |> expression_like) rhs)
+    | Assign (x, ternary, op, z) -> (
+        match ternary with
+        | None ->
+            let x_doc = doc_chunks (nonatomic opts) x in
+            let z_doc = doc_chunks (nonatomic opts) z in
+            let rhs = if can_hang_bracketed z then space ^^ z_doc else nest indent (break 1 ^^ z_doc) in
+            group (x_doc ^^ space ^^ char '=' ^^ rhs)
+        | Some (t_op, y) ->
+            let outer_prec, x_prec, y_prec, z_prec = ternary_operator_precedence (t_op, op) in
+            let doc =
+              prefix indent 1
+                (doc_chunks (opts |> x_prec |> expression_like) x
+                ^^ space ^^ string t_op ^^ space
+                ^^ doc_chunks (opts |> y_prec |> expression_like) y
+                ^^ space ^^ string op
+                )
+                (doc_chunks (opts |> z_prec |> expression_like) z)
+            in
+            if outer_prec > opts.precedence then parens doc else doc
+      )
     | If_then_else (bracing, i, t, e) ->
-        let insert_braces = opts.statement || bracing.then_brace || bracing.else_brace in
+        let have_braces = bracing.then_brace || bracing.else_brace in
+        let insert_braces = (opts.statement || have_braces) && not preserve_structure in
         let i = doc_chunks (opts |> nonatomic |> expression_like) i in
         let t =
-          if insert_braces && (not preserve_structure) && not bracing.then_brace then doc_chunk opts (Block (true, [t]))
+          if insert_braces && not bracing.then_brace then doc_chunk opts (Block (true, [t]))
           else doc_chunks (opts |> nonatomic |> expression_like) t
         in
         let e =
-          if insert_braces && (not preserve_structure) && not bracing.else_brace then doc_chunk opts (Block (true, [e]))
+          if insert_braces && not bracing.else_brace then doc_chunk opts (Block (true, [e]))
           else doc_chunks (opts |> nonatomic |> expression_like) e
         in
-        separate space [string "if"; i; string "then"; t; string "else"; e] |> atomic_parens opts
+        if not (have_braces || insert_braces) then
+          string "if" ^^ space ^^ i ^^ break 1 ^^ string "then" ^^ space ^^ t ^^ break 1 ^^ string "else" ^^ space ^^ e
+          |> atomic_parens opts |> align |> group
+        else (
+          let ite_part kw doc = string kw ^^ space ^^ doc in
+          ite_part "if" i ^^ weak_space ^^ ite_part "then" t ^^ weak_space ^^ ite_part "else" e
+          |> atomic_parens opts |> group
+        )
     | If_then (bracing, i, t) ->
         let i = doc_chunks (opts |> nonatomic |> expression_like) i in
         let t =
@@ -529,21 +642,21 @@ module Make (Config : CONFIG) = struct
     | Vector_updates (exp, updates) ->
         let opts = opts |> nonatomic |> expression_like in
         let exp_doc = doc_chunks opts exp in
-        surround indent 0
-          (char '[' ^^ exp_doc ^^ space ^^ string "with" ^^ space)
-          (group (separate_map (char ',' ^^ break 1) (doc_chunk opts) updates))
-          (char ']')
-        |> atomic_parens opts
+        align
+          (char '[' ^^ ifflat empty space ^^ exp_doc ^^ space ^^ string "with"
+          ^^ nest 2 (break 1 ^^ separate_map (char ',' ^^ break 1) (doc_chunks opts) updates)
+          ^^ break 0 ^^ char ']'
+          )
+        |> atomic_parens opts |> group
     | Index (exp, ix) ->
         let exp_doc = doc_chunks (opts |> atomic |> expression_like) exp in
         let ix_doc = doc_chunks (opts |> nonatomic |> expression_like) ix in
-        let ix_doc = surround_hardline false indent 0 (char '[') ix_doc (char ']') in
+        let ix_doc = group (surround_hardline false indent 0 (char '[') ix_doc (char ']')) in
         exp_doc ^^ ix_doc
     | Exists ex ->
         let ex_doc =
           doc_chunks (atomic opts) ex.vars
-          ^^ char ',' ^^ break 1
-          ^^ doc_chunks (nonatomic opts) ex.constr
+          ^^ (match ex.constr with Some cs -> char ',' ^^ break 1 ^^ doc_chunks (nonatomic opts) cs | None -> empty)
           ^^ char '.' ^^ break 1
           ^^ doc_chunks (nonatomic opts) ex.typ
         in
@@ -568,15 +681,15 @@ module Make (Config : CONFIG) = struct
                   )
              )
           )
-        ^^ break 1
+        ^^ space
     | Struct_update (exp, fexps) ->
         surround indent 1 (char '{')
           (doc_chunks opts exp ^^ space ^^ string "with" ^^ break 1 ^^ separate_map (break 1) (doc_chunks opts) fexps)
           (char '}')
     | Comment (comment_type, n, col, contents, _) -> begin
         match comment_type with
-        | Lexer.Comment_line -> blank n ^^ string "//" ^^ string contents ^^ require_hardline
-        | Lexer.Comment_block -> (
+        | Comment_line -> blank n ^^ string "//" ^^ string contents ^^ require_hardline
+        | Comment_block -> (
             (* Allow a linebreak after a block comment with newlines. This prevents formatting like:
                /* comment line 1
                   comment line 2 */exp
@@ -587,23 +700,29 @@ module Make (Config : CONFIG) = struct
             | ls -> blank n ^^ group (align (string "/*" ^^ separate hardline ls ^^ string "*/")) ^^ require_hardline
           )
       end
-    | Doc_comment contents ->
-        let ls = block_comment_lines 0 contents in
-        align (string "/*!" ^^ separate hardline ls ^^ string "*/") ^^ require_hardline
+    | Doc_comment { contents; comment_type } -> (
+        match comment_type with
+        | Comment_block ->
+            let ls = block_comment_lines 0 contents in
+            align (string "/*!" ^^ separate hardline ls ^^ string "*/") ^^ require_hardline
+        | Comment_line ->
+            let ls = String.split_on_char '\n' contents in
+            align (string "///" ^^ separate_map (hardline ^^ string "///") string ls) ^^ require_hardline
+      )
     | Function f ->
         let sep = hardline ^^ string "and" ^^ space in
         let clauses =
           match f.funcls with
           | [] -> Reporting.unreachable (id_loc f.id) __POS__ "Function with no clauses found"
-          | [funcl] -> doc_funcl f.return_typ_opt opts funcl
+          | [funcl] -> doc_funcl f.hanging f.typq_opt f.return_typ_opt opts funcl
           | funcl :: funcls ->
-              doc_funcl f.return_typ_opt opts funcl ^^ sep ^^ separate_map sep (doc_funcl None opts) f.funcls
+              doc_funcl f.hanging f.typq_opt f.return_typ_opt opts funcl
+              ^^ sep
+              ^^ separate_map sep (doc_funcl false None None opts) f.funcls
         in
         string "function"
         ^^ (if f.clause then space ^^ string "clause" else empty)
-        ^^ space ^^ doc_id f.id
-        ^^ (match f.typq_opt with Some typq -> space ^^ doc_chunks opts typq | None -> empty)
-        ^^ clauses ^^ hardline
+        ^^ space ^^ doc_id f.id ^^ clauses ^^ hardline
     | Val vs ->
         let doc_binding (target, name) =
           string target ^^ char ':' ^^ space ^^ char '"' ^^ utf8string name ^^ char '"'
@@ -652,12 +771,18 @@ module Make (Config : CONFIG) = struct
         let exps = List.map fst exps in
         surround_hardline always_hardline indent 1 (char '{') (separate sep exps) (char '}') |> atomic_parens opts
     | Block_binder (binder, x, y) ->
-        if can_hang y then
+        (* If the body is braced or otherwise bracketed, then the bracketing construct will take care of indentation *)
+        if can_hang_bracketed y then
           separate space
             [string (binder_keyword binder); doc_chunks (atomic opts) x; char '='; doc_chunks (nonatomic opts) y]
+        else if can_hang y then
+          nest indent
+            (separate space
+               [string (binder_keyword binder); doc_chunks (atomic opts) x; char '='; doc_chunks (nonatomic opts) y]
+            )
         else
           separate space [string (binder_keyword binder); doc_chunks (atomic opts) x; char '=']
-          ^^ nest 4 (hardline ^^ doc_chunks (nonatomic opts) y)
+          ^^ nest indent (hardline ^^ doc_chunks (nonatomic opts) y)
     | Binder (binder, x, y, z) ->
         group
           (separate space
@@ -672,12 +797,13 @@ module Make (Config : CONFIG) = struct
         ^^ break 1
         ^^ doc_chunks (nonatomic opts) z
     | Match m ->
+        let opener, closer = if m.aligned then (lineup_start '{', lineup_end '}') else (char '{', char '}') in
         let kw1, kw2 = match_keywords m.kind in
         string kw1 ^^ space
         ^^ doc_chunks (nonatomic opts) m.exp
         ^^ Option.fold ~none:empty ~some:(fun k -> space ^^ string k) kw2
         ^^ space
-        ^^ surround indent 1 (char '{') (separate_map hardline (doc_pexp_chunks opts) m.cases) (char '}')
+        ^^ surround indent 1 opener (separate_map hardline (doc_pexp_chunks m.aligned opts) m.cases) closer
         |> atomic_parens opts
     | Foreach loop ->
         let to_keyword = string (if loop.decreasing then "downto" else "to") in
@@ -698,8 +824,9 @@ module Make (Config : CONFIG) = struct
                 )
                 (char ')')
              )
-        ^^ space
-        ^^ group (doc_chunks (opts |> nonatomic |> statement_like) loop.body)
+        ^^
+        if is_block loop.body then space ^^ group (doc_chunks (opts |> nonatomic |> statement_like) loop.body)
+        else nest indent (hardline ^^ group (doc_chunks (opts |> nonatomic |> statement_like) loop.body))
     | While loop ->
         let measure =
           match loop.termination_measure with
@@ -724,25 +851,36 @@ module Make (Config : CONFIG) = struct
     | None -> (pat, body)
     | Some guard -> (separate space [pat; string "if"; doc_chunks opts guard], body)
 
-  and doc_pexp_chunks opts pexp =
+  and doc_pexp_chunks aligned opts pexp =
     let guarded_pat, body = doc_pexp_chunks_pair opts pexp in
-    separate space [guarded_pat; string "=>"; body]
+    let arrow = if aligned then lineup_point '=' ^^ char '>' else string "=>" in
+    let doc = separate space [guarded_pat; arrow; body] in
+    match pexp.attr with
+    | Some attr ->
+        let attr = doc_chunks opts attr in
+        attr ^^ parens doc ^^ char ','
+    | None -> doc
 
-  and doc_funcl return_typ_opt opts (header, pexp) =
+  and doc_funcl hanging typq_opt return_typ_opt opts (header, pexp) =
     let return_typ =
       match return_typ_opt with
       | Some chunks -> space ^^ prefix_parens indent (string "->") (doc_chunks opts chunks) ^^ space
       | None -> space
     in
+    let typq = match typq_opt with None -> empty | Some typq -> space ^^ doc_chunks opts typq in
+    let paren_args doc = if pexp.funcl_space then parens doc else doc in
     doc_chunks opts header
     ^^
     match pexp.guard with
     | None ->
-        (if pexp.funcl_space then space else empty)
-        ^^ group (doc_chunks ~ungroup_tuple:true opts pexp.pat ^^ return_typ)
-        ^^ string "=" ^^ space ^^ doc_chunks opts pexp.body
+        group (typq ^^ paren_args (doc_chunks ~ungroup_tuple:true opts pexp.pat) ^^ return_typ)
+        ^^ string "="
+        ^^
+        if is_block pexp.body || hanging then space ^^ doc_chunks opts pexp.body
+        else nest indent (hardline ^^ doc_chunks opts pexp.body)
     | Some guard ->
-        parens (separate space [doc_chunks opts pexp.pat; string "if"; doc_chunks opts guard])
+        typq
+        ^^ parens (separate space [doc_chunks opts pexp.pat; string "if"; doc_chunks opts guard])
         ^^ return_typ ^^ string "=" ^^ space ^^ doc_chunks opts pexp.body
 
   (* Format an expression in a block, optionally terminating it with a
@@ -804,6 +942,16 @@ module Make (Config : CONFIG) = struct
        hardline. Encountering a desired hardline means the requirement
        has been satisifed so we set it to false. *)
     let require_hardline = ref false in
+    let last_newline = ref 0 in
+    let all_lineups = ref [] in
+    let current_lineup = ref None in
+    let lineup_nesting = ref 0 in
+
+    let add_newline () =
+      Buffer.add_char buf '\n';
+      last_newline := Buffer.length buf
+    in
+
     String.iter
       (fun c ->
         let rec pop_dedents () =
@@ -830,7 +978,7 @@ module Make (Config : CONFIG) = struct
                 match hardline_type with
                 | Desired ->
                     if debug then Buffer.add_string buf Util.("H" |> red |> clear);
-                    Buffer.add_char buf '\n';
+                    add_newline ();
                     pending_spaces := 0;
                     if !require_hardline then require_hardline := false;
                     after_hardline := true
@@ -846,10 +994,20 @@ module Make (Config : CONFIG) = struct
           column := 0
         )
         else (
-          if c = ' ' then incr pending_spaces
+          if c = ' ' then (
+            match Queue.peek_opt lb_info.weak_spaces with
+            | Some (l, c) when l = !line && c = !column ->
+                ignore (Queue.take lb_info.weak_spaces);
+                if !after_hardline then (if debug then Buffer.add_string buf Util.("W" |> magenta |> bold |> clear))
+                else (
+                  if debug then Buffer.add_string buf Util.("W" |> blue |> clear);
+                  incr pending_spaces
+                )
+            | _ -> incr pending_spaces
+          )
           else (
             if !require_hardline then (
-              Buffer.add_char buf '\n';
+              add_newline ();
               require_hardline := false
             );
             if !pending_spaces > 0 then Buffer.add_string buf (String.make !pending_spaces ' ');
@@ -857,10 +1015,61 @@ module Make (Config : CONFIG) = struct
             after_hardline := false;
             pending_spaces := 0
           );
+
+          ( match Queue.peek_opt lb_info.lineups with
+          | Some (l, c, lineup_type) when l = !line && c = !column ->
+              ( match lineup_type with
+              | Lineup_start -> (
+                  match !current_lineup with None -> current_lineup := Some [] | Some _ -> incr lineup_nesting
+                )
+              | Lineup_point -> (
+                  match !current_lineup with
+                  | Some lineup when !lineup_nesting = 0 ->
+                      let offset = Buffer.length buf in
+                      current_lineup := Some (lineup @ [(offset, !last_newline)])
+                  | _ -> ()
+                )
+              | Lineup_end -> (
+                  match !current_lineup with
+                  | None -> ()
+                  | Some lineup ->
+                      if !lineup_nesting = 0 then (
+                        all_lineups := !all_lineups @ [lineup];
+                        current_lineup := None
+                      )
+                      else decr lineup_nesting
+                )
+              );
+              ignore (Queue.take lb_info.lineups)
+          | _ -> ()
+          );
+
           incr column
         )
       )
       s;
+
+    let lineup_map =
+      List.map
+        (fun lineup ->
+          let indent = List.fold_left (fun m (n, ln) -> max m (n - ln)) 0 lineup in
+          List.map (fun (n, ln) -> (n, indent - (n - ln))) lineup
+        )
+        !all_lineups
+      |> List.flatten |> List.to_seq |> IntMap.of_seq
+    in
+
+    let unaligned = Buffer.contents buf in
+    let buf = Buffer.create (String.length unaligned) in
+    String.iteri
+      (fun offset c ->
+        ( match IntMap.find_opt (offset + 1) lineup_map with
+        | Some align -> Buffer.add_string buf (String.make align ' ')
+        | None -> ()
+        );
+        Buffer.add_char buf c
+      )
+      unaligned;
     Buffer.contents buf
 
   let format_defs_once ?(debug = false) filename source comments defs =
@@ -875,17 +1084,27 @@ module Make (Config : CONFIG) = struct
     let formatted, lb_info = to_string (doc ^^ hardline) in
     fixup lb_info formatted |> fixup_comments ~filename |> discard_extra_trailing_newlines
 
-  let format_defs ?(debug = false) filename source comments defs =
+  let format_defs ?(debug = false) filename source comments starting_defs =
     let open Initial_check in
-    let f1 = format_defs_once ~debug filename source comments defs in
+    let open Parse_ast_diff in
+    let f1 = format_defs_once ~debug filename source comments starting_defs in
     let comments, defs = parse_file_from_string ~filename ~contents:f1 in
     let f2 = format_defs_once ~debug filename f1 comments defs in
     let comments, defs = parse_file_from_string ~filename ~contents:f2 in
     let f3 = format_defs_once ~debug filename f2 comments defs in
     if f2 <> f3 then (
-      print_endline f2;
-      print_endline f3;
+      prerr_endline f2;
+      prerr_endline f3;
       raise (Reporting.err_general Parse_ast.Unknown filename)
+    );
+    ( match diff_list ~at:Parse_ast.Unknown diff_def starting_defs defs with
+    | Some difference ->
+        prerr_endline f3;
+        raise
+          (Reporting.err_general difference
+             (Printf.sprintf "Found difference in syntax tree here after formatting %s" filename)
+          )
+    | None -> ()
     );
     f3
 end

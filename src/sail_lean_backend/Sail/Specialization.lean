@@ -3,8 +3,10 @@ import THE_MODULE_NAME.Defs
 
 namespace Sail
 
+@[simp_sail]
 def sailTryCatch (e : SailM α) (h : exception → SailM α) : SailM α := PreSail.sailTryCatch e h
 
+@[simp_sail]
 def sailThrow (e : exception) : SailM α := PreSail.sailThrow e
 
 abbrev undefined_unit (_ : Unit) : SailM Unit := PreSail.undefined_unit ()
@@ -101,5 +103,13 @@ def ExceptM.run (m : ExceptM α α) : α :=
     | .ok e => e
 
 abbrev sailTryCatchE (e : SailME β α) (h : exception → SailME β α) : SailME β α := PreSail.sailTryCatchE e h
+
+instance : Inhabited (PreSail.SequentialState RegisterType trivialChoiceSource) where
+  default := ⟨default, (), default, default, default, default⟩
+
+def unwrapValue [Inhabited α] (x : SailM α) : α :=
+  match x.run default with
+  | .ok x _ => x
+  | _ => default
 
 end Sail

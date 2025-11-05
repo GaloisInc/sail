@@ -260,14 +260,6 @@ let rec ocaml_exp ctx (E_aux (exp_aux, (l, _)) as exp) =
           | xs -> zencode ctx f ^^ space ^^ parens (separate_map (comma ^^ space) (ocaml_atomic_exp ctx) xs)
         end
     end
-  | E_vector_subrange (exp1, exp2, exp3) -> begin
-      match Env.get_default_order_opt (env_of exp) with
-      | Some (Ord_aux (Ord_inc, _)) ->
-          string "subrange_inc" ^^ space
-          ^^ parens (separate_map (comma ^^ space) (ocaml_atomic_exp ctx) [exp1; exp2; exp3])
-      | _ ->
-          string "subrange" ^^ space ^^ parens (separate_map (comma ^^ space) (ocaml_atomic_exp ctx) [exp1; exp2; exp3])
-    end
   | E_return exp -> separate space [string "r.return"; ocaml_atomic_exp ctx exp]
   | E_assert (exp, _) -> separate space [string "assert"; ocaml_atomic_exp ctx exp]
   | E_typ (_, exp) -> ocaml_exp ctx exp
@@ -705,8 +697,8 @@ let ocaml_fundef ctx (FD_aux (FD_function (_, _, funcls), _)) = ocaml_funcls ctx
 let rec ocaml_fields ctx =
   let ocaml_field typ id = separate space [zencode ctx id; colon; ocaml_typ ctx typ] in
   function
-  | [(typ, id)] -> ocaml_field typ id
-  | (typ, id) :: fields -> ocaml_field typ id ^^ semi ^/^ ocaml_fields ctx fields
+  | [((id, typ), _)] -> ocaml_field typ id
+  | ((id, typ), _) :: fields -> ocaml_field typ id ^^ semi ^/^ ocaml_fields ctx fields
   | [] -> empty
 
 let rec ocaml_cases polymorphic_variant ctx =
@@ -745,7 +737,7 @@ let ocaml_struct_type ctx id = zencode_upper ctx id ^^ dot ^^ zencode ctx id
 
 let ocaml_string_of_struct ctx struct_id typq fields =
   let arg = gensym () in
-  let ocaml_field (typ, id) =
+  let ocaml_field ((id, typ), _) =
     separate space
       [
         string (string_of_id id ^ " = \"");
@@ -803,7 +795,8 @@ let ocaml_typedef ctx (TD_aux (td_aux, (l, _))) =
       ^^ ocaml_def_end
       ^^ ocaml_string_of_variant ctx id typq cases
       ^^ ocaml_def_end
-  | TD_enum (id, ids, _) ->
+  | TD_enum (id, members, _) ->
+      let ids = List.map fst members in
       (separate space [string "type"; zencode ctx id; equals] ^//^ bar ^^ space ^^ ocaml_enum ctx ids)
       ^^ ocaml_def_end ^^ ocaml_string_of_enum ctx id ids ^^ ocaml_def_end
   | TD_abbrev (id, typq, A_aux (A_typ typ, _)) ->
@@ -898,7 +891,7 @@ let ocaml_pp_generators ctx defs orig_types required =
     | TD_abbrev (_, _, A_aux (A_typ typ, _)) -> add_req_from_typ required typ
     | TD_abbrev _ -> required
     | TD_abstract _ -> required
-    | TD_record (_, _, fields, _) -> List.fold_left (fun req (typ, _) -> add_req_from_typ req typ) required fields
+    | TD_record (_, _, fields, _) -> List.fold_left (fun req ((_, typ), _) -> add_req_from_typ req typ) required fields
     | TD_variant (_, _, variants, _) ->
         List.fold_left (fun req (Tu_aux (Tu_ty_id (typ, _), _)) -> add_req_from_typ req typ) required variants
     | TD_enum _ -> required
@@ -992,7 +985,7 @@ let ocaml_pp_generators ctx defs orig_types required =
       let build_enum_constructor id =
         separate space [bar; dquotes (string (string_of_id id)); string "->"; zencode_upper ctx id]
       in
-      let rand_field (typ, id) = zencode ctx id ^^ space ^^ equals ^^ space ^^ make_subgen typ in
+      let rand_field ((id, typ), _) = zencode ctx id ^^ space ^^ equals ^^ space ^^ make_subgen typ in
       let make_args tqs =
         string "g"
         ^^
@@ -1012,13 +1005,14 @@ let ocaml_pp_generators ctx defs orig_types required =
               Some (separate_map (string ";" ^^ break 1) variant_constructor variants),
               Some (separate_map (break 1) build_constructor variants)
             )
-        | TD_enum (_, variants, _) ->
+        | TD_enum (_, members, _) ->
+            let ids = List.map fst members in
             ( TypQ_aux (TypQ_no_forall, Parse_ast.Unknown),
               string "rand_choice ["
-              ^^ group (nest 2 (break 0 ^^ separate_map (string ";" ^^ break 1) (zencode_upper ctx) variants) ^^ break 0)
+              ^^ group (nest 2 (break 0 ^^ separate_map (string ";" ^^ break 1) (zencode_upper ctx) ids) ^^ break 0)
               ^^ string "]",
-              Some (separate_map (string ";" ^^ break 1) enum_constructor variants),
-              Some (separate_map (break 1) build_enum_constructor variants)
+              Some (separate_map (string ";" ^^ break 1) enum_constructor ids),
+              Some (separate_map (break 1) build_enum_constructor ids)
             )
         | TD_record (_, tqs, fields, _) ->
             (tqs, braces (separate_map (string ";" ^^ break 1) rand_field fields), None, None)
@@ -1090,6 +1084,7 @@ let ocaml_ast ast generator_info =
     | Some (types, req) -> ocaml_pp_generators ctx ast.defs types (List.map mk_id req)
   in
   (string "open Sail_lib;;" ^^ hardline)
+  ^^ (string "open Value_type;;" ^^ hardline)
   ^^ (string "module Big_int = Nat_big_num" ^^ ocaml_def_end)
   ^^ concat (List.map (ocaml_def ctx) ast.defs)
   ^^ empty_reg_init ^^ gen_pp
@@ -1140,6 +1135,7 @@ let ocaml_compile default_sail_dir spec ast generator_types =
   let _ = Unix.system ("cp -r " ^ Filename.quote (sail_dir ^ "/src/lib/elf_loader.ml") ^ " .") in
   let _ = Unix.system ("cp -r " ^ Filename.quote (sail_dir ^ "/src/lib/sail_lib.ml") ^ " .") in
   let _ = Unix.system ("cp -r " ^ Filename.quote (sail_dir ^ "/src/lib/util.ml") ^ " .") in
+  let _ = Unix.system ("cp -r " ^ Filename.quote (sail_dir ^ "/src/lib/extraction/.") ^ " .") in
   let tags_file = if !opt_ocaml_coverage then "_tags_coverage" else "_tags" in
   let _ = Unix.system ("cp -r " ^ Filename.quote (sail_dir ^ "/lib/" ^ tags_file) ^ " _tags") in
   let out_chan = open_out (spec ^ ".ml") in

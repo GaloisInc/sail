@@ -19,6 +19,7 @@ print("Sail dir is {}".format(sail_dir))
 
 skip_tests = {
   'while_PM', # Not currently in a useful state
+  'type_pow_zero', # uses cvc4, not worth rerunning for rocq output
 }
 
 def test(name, dir, lib):
@@ -34,12 +35,9 @@ def test(name, dir, lib):
     results.expect_failure('floor_pow2.sail', 'TODO, add termination measure')
     results.expect_failure('try_while_try.sail', 'TODO, add termination measure')
     results.expect_failure('no_val_recur.sail', 'TODO, add termination measure')
-    results.expect_failure('eqn_inst.sail', 'Type variables that need to be filled in')
     results.expect_failure('phantom_option.sail', 'Type variables that need to be filled in')
-    results.expect_failure('plus_one_unify.sail', 'Type variables that need to be filled in')
     results.expect_failure('rebind.sail', 'Variable shadowing')
     results.expect_failure('exist_tlb.sail', 'Existential that requires more type information')
-    results.expect_failure('equation_arguments.sail', 'Essential use of an equality constraint in the context')
     results.expect_failure('type_div.sail', 'Essential use of an equality constraint in the context')
     results.expect_failure('concurrency_interface_dec.sail', 'Need to be built against stdpp version of Sail (for now)')
     results.expect_failure('concurrency_interface_inc.sail', 'Need to be built against stdpp version of Sail (for now)')
@@ -64,8 +62,8 @@ def test(name, dir, lib):
                 step('mkdir -p _build_{}'.format(basename))
                 step('\'{}\' --coq --coq-lib-style {} --dcoq-undef-axioms --strict-bitvector --coq-output-dir _build_{} -o out {}/{}'.format(sail, lib, basename, dir, filename))
                 os.chdir('_build_{}'.format(basename))
-                step('coqc out_types.v')
-                step('coqc out.v')
+                step('coqc out_types.v', name=basename)
+                step('coqc out.v', name=basename)
                 os.chdir('..')
                 step('rm -r _build_{}'.format(basename))
                 print_ok(filename)
@@ -77,8 +75,17 @@ xml = '<testsuites>\n'
 
 xml += test('typecheck tests', '../typecheck/pass', 'stdpp')
 xml += test('Coq specific tests', 'pass', 'stdpp')
-xml += test('typecheck tests', '../typecheck/pass', 'bbv')
-xml += test('Coq specific tests', 'pass', 'bbv')
+
+try:
+    p = subprocess.run(["coqtop", "-require", "bbv.Word", "-batch"])
+    if p.returncode == 0:
+        xml += test('typecheck tests', '../typecheck/pass', 'bbv')
+        xml += test('Coq specific tests', 'pass', 'bbv')
+    else:
+        print("bbv not found, skipping bbv tests")
+except Exception as e:
+    print("Unable to check for bbv")
+    print(e)
 
 xml += '</testsuites>\n'
 

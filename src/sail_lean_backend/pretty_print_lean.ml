@@ -102,12 +102,16 @@ let rec fix_id name =
   | _ -> if String.contains name '#' then fix_id (String.concat "_" (Util.split_on_char '#' name)) else name
 
 let doc_id_ctor (Id_aux (i, _)) =
-  match i with Id i -> string (fix_id i) | Operator x -> string (Util.zencode_string ("op " ^ x))
+  match i with
+  | And_bool -> string "and_bool"
+  | Or_bool -> string "or_bool"
+  | Id i -> string (fix_id i)
+  | Operator x -> string (Util.zencode_string ("op " ^ x))
 
 let doc_kid ctx (Kid_aux (Var x, _) as ki) =
   match KBindings.find_opt ki ctx.kid_id_renames with
   | Some (Some i) -> doc_id_ctor i
-  | _ -> string ("k_" ^ String.sub x 1 (String.length x - 1))
+  | _ -> "k_" ^ String.sub x 1 (String.length x - 1) |> fix_id |> string
 
 (* TODO do a proper renaming and keep track of it *)
 
@@ -219,7 +223,7 @@ let rec doc_nexp ctx (Nexp_aux (n, l) as nexp) =
   and app (Nexp_aux (n, l) as nexp) =
     match n with
     | Nexp_if (i, t, e) ->
-        separate space [string "bif"; doc_nconstraint ctx i; string "then"; atomic t; string "else"; atomic e]
+        separate space [string "if ("; doc_nconstraint ctx i; string " : Bool) then"; atomic t; string "else"; atomic e]
     | Nexp_app (Id_aux (Id "div", _), [n1; n2]) -> separate space [atomic n1; string "/"; atomic n2]
     | Nexp_app (Id_aux (Id "mod", _), [n1; n2]) -> separate space [atomic n1; string "%"; atomic n2]
     | Nexp_app (Id_aux (Id "abs", _), [n1]) -> separate dot [atomic n1; string "natAbs"]
@@ -324,7 +328,7 @@ let captured_typ_var ((i, Typ_aux (t, _)) as typ) =
       Some (i, ki)
   | _ -> None
 
-let doc_typ_id ctx (typ, fid) = flow (break 1) [doc_id_ctor fid; colon; doc_typ ctx typ]
+let doc_typ_id ctx ((fid, typ), _) = flow (break 1) [doc_id_ctor fid; colon; doc_typ ctx typ]
 
 let doc_kind ctx (kid : kid) (K_aux (k, _)) =
   match k with
@@ -375,9 +379,9 @@ let doc_lit (L_aux (lit, l)) =
   | L_false -> string "false"
   | L_true -> string "true"
   | L_num i -> doc_big_int i
-  | L_hex "" | L_bin "" -> string "BitVec.nil"
-  | L_hex n -> utf8string ("0x" ^ n)
-  | L_bin n -> utf8string ("0b" ^ n)
+  | L_hex [] | L_bin [] -> string "BitVec.nil"
+  | L_hex hex -> utf8string ("0x" ^ string_of_hex_lit ~group_separator:"" ~case:Uppercase hex)
+  | L_bin bin -> utf8string ("0b" ^ string_of_bin_lit ~group_separator:"" bin)
   | L_undef -> utf8string "(Fail \"undefined value of unsupported type\")"
   | L_string s -> utf8string ("\"" ^ lean_escape_string s ^ "\"")
   | L_real s -> utf8string s (* TODO test if this is really working *)
@@ -392,14 +396,9 @@ let string_of_exp_con (E_aux (e, _)) =
   match e with
   | E_block _ -> "E_block"
   | E_ref _ -> "E_ref"
-  | E_app_infix _ -> "E_app_infix"
   | E_if _ -> "E_if"
   | E_loop _ -> "E_loop"
   | E_for _ -> "E_for"
-  | E_vector_access _ -> "E_vector_access"
-  | E_vector_subrange _ -> "E_vector_subrange"
-  | E_vector_update _ -> "E_vector_update"
-  | E_vector_update_subrange _ -> "E_vector_update_subrange"
   | E_vector_append _ -> "E_vector_append"
   | E_list _ -> "E_list"
   | E_cons _ -> "E_cons"
@@ -635,7 +634,8 @@ let op_of_id id =
 
 let unnop_of_id id = match id with Some "_lean_pow2" -> Some "2 ^ " | _ -> None
 
-let is_loop id = match string_of_id id with "while#" | "foreach#" | "until#" -> true | _ -> false
+let is_loop id =
+  match string_of_id id with "while#" | "while#t" | "foreach#" | "until#" | "until#t" -> true | _ -> false
 
 let has_loop (e : 'a exp) =
   let e_app (id, args) = is_loop id || List.fold_left ( || ) false args in
@@ -721,6 +721,7 @@ and wrap_exp as_monadic ctx e =
       | _ -> d
     )
 
+(* TODO: refactor this function *)
 and doc_loop l as_monadic ctx loop_kind args =
   let lambda effects lambda_pp d =
     let lambda_pp = if effects then lambda_pp ^^ string " do" else lambda_pp in
@@ -759,6 +760,7 @@ and doc_loop l as_monadic ctx loop_kind args =
   let cond_pp = doc_exp cond_effects ctx cond in
   let cond_pp = lambda cond_effects base_lambda cond_pp in
   let loop_cond = wrap_with_left_arrow cond_effects (prefix 2 1 cond_pp vars_pp) in
+  let measure = Option.map (fun m -> parens (string "fuel :=" ^^ doc_exp false ctx m)) measure in
   match loop_kind with
   | `While ->
       let loop_head = prefix 2 1 (string "while " ^^ loop_cond) (string "do") in
@@ -767,6 +769,19 @@ and doc_loop l as_monadic ctx loop_kind args =
       let loop_body = loop_body_1 ^^ hardline ^^ prefix 2 1 (vars_pp ^^ space ^^ arrow) body_pp in
       let full_loop = prefix 2 1 loop_head loop_body in
       separate hardline [vars_dec_pp; full_loop; wrap_with_pure as_monadic vars_pp]
+  | `WhileFuel | `UntilFuel ->
+      let measure = Option.get measure in
+      let cond_pp = parens (string "fun " ^^ vartuple_pp ^^ string " => " ^^ doc_exp true ctx cond) in
+      let init = doc_exp false ctx varstuple in
+      let loop_fn = match loop_kind with `WhileFuel -> "whileFuelM" | _ -> "untilFuelM" in
+      let loop_head = string loop_fn ^^ space ^^ measure ^^ space ^^ cond_pp ^^ space ^^ init in
+      let arrow = if body_effects then leftarrowdo else coloneq in
+      let fun_header = string "fun " ^^ vartuple_pp ^^ space ^^ string "=> do" in
+      let body_pp = doc_exp true body_ctx body in
+      let loop_body = prefix 2 1 fun_header body_pp in
+      let full_loop = prefix 2 1 loop_head loop_body in
+      let full_loop = string "let" ^^ space ^^ vars_pp ^^ space ^^ leftarrow ^^ space ^^ full_loop in
+      separate hardline [full_loop; wrap_with_pure as_monadic vars_pp]
   | `Until ->
       let loop_head = string "repeat" in
       let loop_footer = flow (break 1) [string "until"; loop_cond] in
@@ -812,7 +827,9 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
         )
   | E_app (Id_aux (Id "__id", _), [e]) -> doc_exp as_monadic ctx e
   | E_app (Id_aux (Id "while#", _), args) -> doc_loop l as_monadic ctx `While args
+  | E_app (Id_aux (Id "while#t", _), args) -> doc_loop l as_monadic ctx `WhileFuel args
   | E_app (Id_aux (Id "until#", _), args) -> doc_loop l as_monadic ctx `Until args
+  | E_app (Id_aux (Id "until#t", _), args) -> doc_loop l as_monadic ctx `UntilFuel args
   | E_app (Id_aux (Id "foreach#", _), args) -> begin
       match args with
       | [from_exp; to_exp; step_exp; ord_exp; vartuple; body] ->
@@ -1001,7 +1018,7 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
         )
   | E_if (i, t, e) ->
       let statements_monadic = as_monadic || has_effect t || has_effect e in
-      nest 2 (string "bif" ^^ space ^^ nest 1 (d_of_arg ctx i))
+      nest 2 (string "if (" ^^ nest 1 (d_of_arg ctx i) ^^ string " : Bool)")
       ^^ hardline
       ^^ prefix 2 1 (string "then") (wrap_exp statements_monadic ctx t)
       ^^ hardline
@@ -1110,7 +1127,7 @@ let doc_funcl_init global (FCL_aux (FCL_funcl (id, pexp), annot)) =
   let typ_quant_comment = doc_typ_quant_in_comment ctx tq_all in
   (* Use auto-implicits for type quanitifiers for now and see if this works *)
   let doc_ret_typ_orig = doc_typ ctx ret_typ in
-  let is_monadic = effectful (effect_of exp) in
+  let is_monadic = not (Effects.function_is_pure id ctx.global.effect_info) in
   let early_return = has_early_return exp in
   let has_loop = has_loop exp in
   (* Add monad for stateful functions *)
@@ -1138,14 +1155,33 @@ let doc_funcl_init global (FCL_aux (FCL_funcl (id, pexp), annot)) =
     fixup_binders
   )
 
+let mapping_regex = Str.regexp "_\\(forward\\|backwards\\)\\(_matches\\)?$"
+
+(* Mappings with string concatenation on the LHS are not translated to
+executable code by sail, so we detect the pattern to replace the forward mapping
+direction by a function that throws an exception. cf #260 *)
+let untranslatable_mapping id exp =
+  let rec exp_disc e =
+    match e with
+    | E_aux (E_let (_, e), _) -> exp_disc e
+    | E_aux (E_app (_, [E_aux (E_exit _, _)]), _) -> true
+    | _ -> false
+  in
+  let rec exp_match e =
+    match e with E_aux (E_let (_, e), _) -> exp_match e | E_aux (E_match (e, _), _) -> exp_disc e | _ -> false
+  in
+
+  let id = string_of_id id in
+  if Str.string_match mapping_regex id 0 then false else exp_match exp
+
 let doc_funcl_body fixup_binders ctx (FCL_aux (FCL_funcl (id, pexp), annot)) =
   let env = env_of_tannot (snd annot) in
   let _, _, exp, _ = destruct_pexp pexp in
   (* If an argument was [x : (Int, Int)], which is transformed to [(arg0: Int) (arg1: Int)],
      this adds a let binding at the beginning of the function, of the form [let x := (arg0, arg1)] *)
   let exp = fixup_binders exp in
-  let is_monadic = has_effect exp in
-  doc_exp is_monadic (context_with_env ctx env) exp
+  let is_monadic = has_effect exp || not (Effects.function_is_pure id ctx.global.effect_info) in
+  if untranslatable_mapping id exp then string "throw Error.Exit" else doc_exp is_monadic (context_with_env ctx env) exp
 
 let doc_termination ctx fnpat (Rec_aux (meas, _)) =
   match meas with
@@ -1198,12 +1234,13 @@ let string_of_type_def_con (TD_aux (td, _)) =
 
 let doc_typdef ctx (TD_aux (td, tannot) as full_typdef) =
   match td with
-  | TD_enum (id, fields, _) ->
-      let fields = List.map doc_id_ctor fields in
-      let fields = List.map (fun i -> space ^^ pipe ^^ space ^^ i) fields in
-      let derivers = if List.length fields == 0 then [string "Repr"] else [string "Inhabited"; string "Repr"] in
+  | TD_enum (id, members, _) ->
+      let ids = List.map fst members in
+      let ids = List.map doc_id_ctor ids in
+      let ids = List.map (fun i -> space ^^ pipe ^^ space ^^ i) ids in
+      let derivers = if List.length ids == 0 then [string "Repr"] else [string "Inhabited"; string "Repr"] in
       let derivers = if IdSet.mem id !non_beq_types then derivers else string "BEq" :: derivers in
-      let enums_doc = concat fields in
+      let enums_doc = concat ids in
       let _ = opens := IdSet.add id !opens in
       let id = doc_id_ctor id in
       nest 2
@@ -1227,6 +1264,8 @@ let doc_typdef ctx (TD_aux (td, tannot) as full_typdef) =
       let vars = List.map parens vars in
       let vars = separate space vars in
       nest 2 (flow (break 1) (remove_empties [string "abbrev"; doc_id_ctor id; vars; coloneq; doc_typ ctx t]))
+  | TD_abbrev (id, tq, A_aux (A_typ t, _)) when string_of_id id = "fp_bits" ->
+      string (Printf.sprintf "-- Abbreviation %s skipped" (string_of_id id)) (* FIXME *)
   | TD_abbrev (id, tq, A_aux (A_typ t, _)) ->
       let vars = doc_typ_quant_only_vars ctx tq in
       let vars = separate space vars in
@@ -1280,7 +1319,9 @@ let doc_val ctx pat exp =
   in
   let typpp = match pat_typ with None -> empty | Some typ -> space ^^ colon ^^ space ^^ doc_typ ctx typ in
   let idpp = doc_id_ctor id in
-  let base_pp = doc_exp false ctx exp in
+  let base_pp =
+    if has_effect exp then string "unwrapValue" ^^ space ^^ parens (doc_exp true ctx exp) else doc_exp false ctx exp
+  in
   (global, nest 2 (group (string "def" ^^ space ^^ idpp ^^ typpp ^^ space ^^ coloneq ^/^ base_pp)))
 
 let should_print_function_def def =
@@ -1340,16 +1381,10 @@ let rec collect_imports_rec (cg : Callgraph.callgraph) (defs : (tannot, env) def
     (accs : IntSet.t list) (acc : IntSet.t) (idx : int) (nonempty_print : bool) : IntSet.t list =
   match defs with
   | [] -> accs @ [acc]
-  | (DEF_aux (DEF_fundef fdef, dannot) as d) :: defs' ->
-      let map, acc = add_def_to_map_and_ref_set cg map acc idx d in
-      collect_imports_rec cg defs' map accs acc idx true
-  | (DEF_aux (DEF_internal_mutrec fdefs, dannot) as d) :: defs' ->
+  | (DEF_aux ((DEF_fundef _ | DEF_internal_mutrec _ | DEF_let _ | DEF_register _), _) as d) :: defs' ->
       let map, acc = add_def_to_map_and_ref_set cg map acc idx d in
       collect_imports_rec cg defs' map accs acc idx true
   | DEF_aux (DEF_type tdef, _) :: defs' -> collect_imports_rec cg defs' map accs acc idx nonempty_print
-  | (DEF_aux (DEF_let (LB_aux (LB_val (pat, exp), _)), _) as d) :: defs' ->
-      let map, acc = add_def_to_map_and_ref_set cg map acc idx d in
-      collect_imports_rec cg defs' map accs acc idx true
   | DEF_aux (DEF_pragma ("include_start", Pragma_line (file, _)), _) :: defs'
   | DEF_aux (DEF_pragma ("file_start", Pragma_line (file, _)), _) :: defs'
   | DEF_aux (DEF_pragma ("include_end", Pragma_line (file, _)), _) :: defs'
@@ -1361,7 +1396,7 @@ let rec collect_imports_rec (cg : Callgraph.callgraph) (defs : (tannot, env) def
       if should_print_function_def d then failwith "this case of collect_imports_rec should be unreachable"
       else collect_imports_rec cg defs' map accs acc idx nonempty_print
 
-let rec collect_imports (cg : Callgraph.callgraph) (defs : (tannot, env) def list) =
+let collect_imports (cg : Callgraph.callgraph) (defs : (tannot, env) def list) =
   collect_imports_rec cg defs Bindings.empty [] IntSet.empty 0 false
 
 (* Remove all imports for now, they will be printed in other files. Probably just for testing. *)

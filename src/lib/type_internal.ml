@@ -93,6 +93,7 @@ type type_error =
   | Err_function_arg of Parse_ast.l * typ * type_error
   | Err_no_function_type of { id : id; functions : (typquant * typ) Bindings.t }
   | Err_unbound_id of { id : id; locals : (mut * typ) Bindings.t; have_function : bool }
+  | Err_vector_subrange of { n : Big_int.num; m : Big_int.num; order : order }
   | Err_hint of string
   | Err_with_hint of string * type_error
   | Err_alternate of type_error * (string * Parse_ast.l * type_error) list
@@ -109,13 +110,11 @@ let string_of_bind (typquant, typ) = string_of_typquant typquant ^ ". " ^ string
 
 (* unloc_X functions remove location information from AST nodes, so we can use structural equality *)
 
-let rec unloc_id = function
-  | Id_aux (Id x, _) -> Id_aux (Id x, Parse_ast.Unknown)
-  | Id_aux (Operator x, _) -> Id_aux (Operator x, Parse_ast.Unknown)
+let unloc_id (Id_aux (aux, _)) = Id_aux (aux, Parse_ast.Unknown)
 
-and unloc_kid = function Kid_aux (Var x, _) -> Kid_aux (Var x, Parse_ast.Unknown)
+let unloc_kid (Kid_aux (Var x, _)) = Kid_aux (Var x, Parse_ast.Unknown)
 
-and unloc_nexp_aux = function
+let rec unloc_nexp_aux = function
   | Nexp_id id -> Nexp_id (unloc_id id)
   | Nexp_var kid -> Nexp_var (unloc_kid kid)
   | Nexp_constant n -> Nexp_constant n

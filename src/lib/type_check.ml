@@ -55,6 +55,7 @@ open Parse_ast.Attribute_data
 module Big_int = Nat_big_num
 
 open Type_internal
+open Coq_def_annot
 
 let set_tc_debug level = opt_tc_debug := level
 
@@ -1232,15 +1233,17 @@ and rewrite_arg l env = function
   | A_aux (A_bool nc, _) -> rewrite_nc env nc
   | A_aux (A_typ typ, _) -> Reporting.unreachable l __POS__ "Found Type-kinded parameter during sizeof rewriting"
 
-and rewrite_nc_aux l env = function
-  | NC_ge (n1, n2) -> E_app_infix (rewrite_sizeof l env n1, mk_id ">=", rewrite_sizeof l env n2)
-  | NC_gt (n1, n2) -> E_app_infix (rewrite_sizeof l env n1, mk_id ">", rewrite_sizeof l env n2)
-  | NC_le (n1, n2) -> E_app_infix (rewrite_sizeof l env n1, mk_id "<=", rewrite_sizeof l env n2)
-  | NC_lt (n1, n2) -> E_app_infix (rewrite_sizeof l env n1, mk_id "<", rewrite_sizeof l env n2)
-  | NC_equal (arg1, arg2) -> E_app_infix (rewrite_arg l env arg1, mk_id "==", rewrite_arg l env arg2)
-  | NC_not_equal (arg1, arg2) -> E_app_infix (rewrite_arg l env arg1, mk_id "!=", rewrite_arg l env arg2)
-  | NC_and (nc1, nc2) -> E_app_infix (rewrite_nc env nc1, mk_id "&", rewrite_nc env nc2)
-  | NC_or (nc1, nc2) -> E_app_infix (rewrite_nc env nc1, mk_id "|", rewrite_nc env nc2)
+and rewrite_nc_aux l env =
+  let op s = Id_aux (Operator s, l) in
+  function
+  | NC_ge (n1, n2) -> E_app (op ">=", [rewrite_sizeof l env n1; rewrite_sizeof l env n2])
+  | NC_gt (n1, n2) -> E_app (op ">", [rewrite_sizeof l env n1; rewrite_sizeof l env n2])
+  | NC_le (n1, n2) -> E_app (op "<=", [rewrite_sizeof l env n1; rewrite_sizeof l env n2])
+  | NC_lt (n1, n2) -> E_app (op "<", [rewrite_sizeof l env n1; rewrite_sizeof l env n2])
+  | NC_equal (arg1, arg2) -> E_app (op "==", [rewrite_arg l env arg1; rewrite_arg l env arg2])
+  | NC_not_equal (arg1, arg2) -> E_app (op "!=", [rewrite_arg l env arg1; rewrite_arg l env arg2])
+  | NC_and (nc1, nc2) -> E_app (op "&", [rewrite_nc env nc1; rewrite_nc env nc2])
+  | NC_or (nc1, nc2) -> E_app (op "|", [rewrite_nc env nc1; rewrite_nc env nc2])
   | NC_false -> E_lit (mk_lit L_false)
   | NC_true -> E_lit (mk_lit L_true)
   | NC_set (_, []) -> E_lit (mk_lit L_false)
@@ -1380,8 +1383,8 @@ let infer_lit (L_aux (lit_aux, l)) =
   | L_string _ when !Type_env.opt_string_literal_type -> string_literal_typ
   | L_string _ -> string_typ
   | L_real _ -> real_typ
-  | L_bin str -> bitvector_typ (nint (String.length str))
-  | L_hex str -> bitvector_typ (nint (String.length str * 4))
+  | L_bin bin -> bitvector_typ (nint (bin_lit_length bin))
+  | L_hex hex -> bitvector_typ (nint (hex_lit_length hex))
   | L_undef -> typ_error l "Cannot infer the type of undefined"
 
 let instantiate_simple_equations =
@@ -1553,9 +1556,9 @@ let rec assert_constraint env b (E_aux (exp_aux, _) as exp) =
       | E_lit (L_aux (L_true, _)) -> Some nc_true
       | E_lit (L_aux (L_false, _)) -> Some nc_false
       | E_let (_, e) -> assert_constraint env b e (* TODO: beware of fresh type vars *)
-      | E_app (op, [x; y]) when string_of_id op = "or_bool" ->
+      | E_app (op, [x; y]) when is_or_bool op ->
           combine_constraint (not b) nc_or (assert_constraint env b x) (assert_constraint env b y)
-      | E_app (op, [x; y]) when string_of_id op = "and_bool" ->
+      | E_app (op, [x; y]) when is_and_bool op ->
           combine_constraint b nc_and (assert_constraint env b x) (assert_constraint env b y)
       | E_app (op, [x; y]) when string_of_id op = "gteq_int" ->
           option_binop nc_gteq (assert_nexp env x) (assert_nexp env y)
@@ -1750,32 +1753,41 @@ let same_bindings ~at:l ~env ~left_env ~right_env lhs rhs =
         ("Identifier " ^ string_of_id id ^ " found on right hand side of mapping, but not on left")
   | None -> ()
 
-let bitvector_typ_from_range l env n m =
+let bitvector_typ_from_vector_subrange l env n m =
   let len =
-    match Env.get_default_order env with
+    let order = Env.get_default_order env in
+    match order with
     | Ord_aux (Ord_dec, _) ->
         if Big_int.greater_equal n m then Big_int.sub (Big_int.succ n) m
-        else
-          typ_error l
+        else typ_raise l (Err_vector_subrange { n; m; order })
+    (*
             (Printf.sprintf "First index %s must be greater than or equal to second index %s (when default Order dec)"
                (Big_int.to_string n) (Big_int.to_string m)
             )
+*)
     | Ord_aux (Ord_inc, _) ->
         if Big_int.less_equal n m then Big_int.sub (Big_int.succ m) n
-        else
-          typ_error l
+        else typ_raise l (Err_vector_subrange { n; m; order })
+    (*
             (Printf.sprintf "First index %s must be less than or equal to second index %s (when default Order inc)"
                (Big_int.to_string n) (Big_int.to_string m)
             )
+*)
   in
   bitvector_typ (nconstant len)
 
-let bind_pattern_vector_subranges (P_aux (_, (l, _)) as pat) env =
+let each_pattern_vector_subranges f (P_aux (_, (l, _)) as pat) acc =
   let id_ranges = pattern_vector_subranges pat in
   Bindings.fold
-    (fun id ranges env ->
+    (fun id ranges acc ->
       match ranges with
-      | [(n, m)] -> Env.add_local id (Immutable, bitvector_typ_from_range l env n m) env
+      | [(n, m)] ->
+          if Big_int.equal m Big_int.zero then f l id n m acc
+          else
+            typ_error l
+              (Printf.sprintf "Cannot bind %s as pattern subranges do not start at bit 0 (lowest bit is %s)."
+                 (string_of_id id) (Big_int.to_string m)
+              )
       | _ :: (m, _) :: _ ->
           typ_error l
             (Printf.sprintf "Cannot bind %s as pattern subranges are non-contiguous. %s[%s] is not defined."
@@ -1784,7 +1796,14 @@ let bind_pattern_vector_subranges (P_aux (_, (l, _)) as pat) env =
             )
       | _ -> Reporting.unreachable l __POS__ "Found range pattern with no range"
     )
-    id_ranges env
+    id_ranges acc
+
+let bind_pattern_vector_subranges pat env =
+  each_pattern_vector_subranges
+    (fun l id n m -> Env.add_local id (Immutable, bitvector_typ (nconstant (Big_int.sub (Big_int.succ n) m))))
+    pat env
+
+let check_pattern_vector_subranges pat env = each_pattern_vector_subranges (fun _ _ _ _ () -> ()) pat ()
 
 let unbound_id_error ~at:l env v =
   match Bindings.find_opt v (Env.get_val_specs env) with
@@ -1806,7 +1825,6 @@ let rec build_overload_tree env f xs annot =
 
 and build_overload_tree_arg env (E_aux (aux, annot) as exp) =
   match aux with
-  | E_app_infix (x, op, y) when Env.is_overload (deinfix op) env -> build_overload_tree env (deinfix op) [x; y] annot
   | E_app (f, xs) when Env.is_overload f env -> build_overload_tree env f xs annot
   | E_id v -> begin
       match Env.lookup_id v env with
@@ -1911,7 +1929,13 @@ let rec filter_overload_tree env =
 
 let add_overload_attribute l f =
   let l = gen_loc l in
-  let name, is_infix = match f with Id_aux (Id v, _) -> (v, false) | Id_aux (Operator v, _) -> (v, true) in
+  let name, is_infix =
+    match f with
+    | Id_aux (And_bool, _) -> ("and_bool", false)
+    | Id_aux (Or_bool, _) -> ("or_bool", false)
+    | Id_aux (Id v, _) -> (v, false)
+    | Id_aux (Operator v, _) -> (v, true)
+  in
   add_attribute l "overloaded"
     (Some (AD_aux (AD_object [("name", AD_aux (AD_string name, l)); ("is_infix", AD_aux (AD_bool is_infix, l))], l)))
 
@@ -2254,7 +2278,6 @@ let rec check_exp env (E_aux (exp_aux, (l, uannot)) as exp : uannot exp) (Typ_au
     end
   | E_vector_append (v1, E_aux (E_vector [], _)), _ -> check_exp env v1 typ
   | E_vector_append (v1, v2), _ -> check_exp env (E_aux (E_app (mk_id "append", [v1; v2]), (l, uannot))) typ
-  | E_app_infix (x, op, y), _ -> check_exp env (E_aux (E_app (deinfix op, [x; y]), (l, uannot))) typ
   | E_app (f, [E_aux (E_constraint nc, _)]), _ when string_of_id f = "_prove" ->
       Env.wf_constraint ~at:l env nc;
       if prove __POS__ env nc then annot_exp (E_lit (L_aux (L_unit, Parse_ast.Unknown))) unit_typ
@@ -2325,7 +2348,7 @@ let rec check_exp env (E_aux (exp_aux, (l, uannot)) as exp : uannot exp) (Typ_au
       let tree, _ = filter_overload_tree env tree in
       let exp, env = overload_tree_to_exp env tree in
       check_exp env exp typ
-  | E_app (f, [x; y]), _ when string_of_id f = "and_bool" || string_of_id f = "or_bool" -> begin
+  | E_app (f, [x; y]), _ when is_and_bool f || is_or_bool f -> begin
       (* We have to ensure that the type of y in (x || y) and (x && y)
          is non-empty, otherwise it could force the entire type of the
          expression to become empty even when unevaluted due to
@@ -2345,6 +2368,9 @@ let rec check_exp env (E_aux (exp_aux, (l, uannot)) as exp : uannot exp) (Typ_au
           in
           expect_subtype env inferred_exp typ
     end
+  | E_app (f, xs), _ when is_vector_syntax f ->
+      let inferred_exp = irule infer_exp env exp in
+      expect_subtype env inferred_exp typ
   | E_app (f, xs), _ ->
       let inferred_exp = infer_funapp l env f xs uannot (Some typ) in
       expect_subtype env inferred_exp typ
@@ -2561,78 +2587,119 @@ and check_or_infer_sequence ~at:l env xs tyvars nc typ_opt =
   | None -> None
 
 and check_block l env exps ret_typ =
+  (* The first thing we do when checking a block is to get the lexing
+     position at the end of the final expression, which we can use to
+     construct spans for new expressions constructed when
+     type-checking the block. *)
+  let final_pos =
+    match Util.last_opt exps with
+    | Some exp -> (
+        match Reporting.simp_loc (exp_loc exp) with Some (_, p) -> Some p | None -> None
+      )
+    | None -> None
+  in
+  (* The check_block' function returns a list of checked expressions,
+     and in addition the lexing position of the first expression. In
+     combination with the final_pos above, this can be used to
+     construct correct spans for sub-parts of the block. *)
+  let _, block_exp = check_block' final_pos env exps ret_typ in
+  block_exp
+
+and check_block' f_p env exps ret_typ =
   let final env exp = match ret_typ with Some typ -> crule check_exp env exp typ | None -> irule infer_exp env exp in
-  let annot_exp exp typ exp_typ = E_aux (exp, (l, mk_expected_tannot env typ exp_typ)) in
+  let extend_block l = match f_p with Some p -> Reporting.extend_loc p l | None -> l in
+  let annot_exp l exp typ exp_typ = E_aux (exp, (l, mk_expected_tannot env typ exp_typ)) in
   match Nl_flow.analyze exps with
   | [] -> (
       match ret_typ with
       | Some typ ->
-          typ_equality l env typ unit_typ;
-          []
-      | None -> []
+          typ_equality (Reporting.range f_p f_p) env typ unit_typ;
+          (None, [])
+      | None -> (None, [])
     )
-  (* We need the special case for assign even if it's the last
-     expression in the block because the block provides the scope when
-     it's a declaration. *)
-  | E_aux (E_assign (lexp, bind), (assign_l, _)) :: exps -> begin
-      match lexp_assignment_type env lexp with
-      | Update ->
-          let texp, env = bind_assignment assign_l env lexp bind in
-          texp :: check_block l env exps ret_typ
-      | Declaration ->
-          if !opt_strict_var then typ_error assign_l "Variables must be declared with an explicit var expression"
-          else (
-            let lexp, bind, env =
-              match bind_assignment l env lexp bind with
-              | E_aux (E_assign (lexp, bind), _), env -> (lexp, bind, env)
-              | _, _ -> assert false
-            in
-            let rec last_typ = function [exp] -> typ_of exp | _ :: exps -> last_typ exps | [] -> unit_typ in
-            let rest = check_block l env exps ret_typ in
-            let typ = last_typ rest in
-            [annot_exp (E_var (lexp, bind, annot_exp (E_block rest) typ ret_typ)) typ ret_typ]
+  | exp :: exps -> (
+      let l = exp_loc exp in
+      let s_p = Reporting.start_pos (exp_loc exp) in
+      match (exp, exps) with
+      (* We need the special case for assign even if it's the last
+         expression in the block because the block provides the scope when
+         it's a declaration. *)
+      | E_aux (E_assign (lexp, bind), (assign_l, _)), _ ->
+          let exps =
+            match lexp_assignment_type env lexp with
+            | Update ->
+                let texp, env = bind_assignment assign_l env lexp bind in
+                let _, exps = check_block' f_p env exps ret_typ in
+                texp :: exps
+            | Declaration ->
+                if !opt_strict_var then typ_error assign_l "Variables must be declared with an explicit var expression"
+                else (
+                  let lexp, bind, env =
+                    match bind_assignment assign_l env lexp bind with
+                    | E_aux (E_assign (lexp, bind), _), env -> (lexp, bind, env)
+                    | _, _ -> assert false
+                  in
+                  let rec last_typ = function [exp] -> typ_of exp | _ :: exps -> last_typ exps | [] -> unit_typ in
+                  let p1, rest = check_block' f_p env exps ret_typ in
+                  let typ = last_typ rest in
+                  [
+                    annot_exp (extend_block assign_l)
+                      (E_var (lexp, bind, annot_exp (Reporting.range p1 f_p) (E_block rest) typ ret_typ))
+                      typ ret_typ;
+                  ]
+                )
+          in
+          (s_p, exps)
+      | _, [] -> (Reporting.start_pos (exp_loc exp), [final env exp])
+      | E_aux (E_app (f, [E_aux (E_constraint nc, (constraint_l, _))]), _), _ when string_of_id f = "_assume" ->
+          Env.wf_constraint ~at:l env nc;
+          let env = Env.add_constraint nc env in
+          let annotated_exp =
+            annot_exp (exp_loc exp) (E_app (f, [annot_exp constraint_l (E_constraint nc) bool_typ None])) unit_typ None
+          in
+          let _, exps = check_block' f_p env exps ret_typ in
+          (s_p, annotated_exp :: exps)
+      | E_aux (E_assert (constr_exp, msg), (assert_l, _)), _ ->
+          let msg = assert_msg msg in
+          let constr_exp = crule check_exp env constr_exp bool_typ in
+          let checked_msg = crule check_exp env msg string_typ in
+          let env, added_constraint =
+            match assert_constraint env true constr_exp with
+            | Some nc ->
+                typ_print (lazy (adding ^ "constraint " ^ string_of_n_constraint nc ^ " for assert"));
+                (Env.add_constraint ~reason:(assert_l, "assertion") nc env, true)
+            | None -> (env, false)
+          in
+          let texp = annot_exp assert_l (E_assert (constr_exp, checked_msg)) unit_typ (Some unit_typ) in
+          let _, checked_exps = check_block' f_p env exps ret_typ in
+          (* If we can prove false, then any code after the assertion
+             is dead. In this inconsistent typing environment we can
+             do some broken things, so we eliminate this dead code
+             here *)
+          if added_constraint && List.compare_length_with exps 1 >= 0 && prove __POS__ env nc_false then (
+            let ret_typ = List.rev checked_exps |> List.hd |> typ_of in
+            (s_p, texp :: [crule check_exp env (mk_exp ~loc:assert_l (E_exit (mk_lit_exp L_unit))) ret_typ])
           )
-    end
-  | [exp] -> [final env exp]
-  | E_aux (E_app (f, [E_aux (E_constraint nc, _)]), _) :: exps when string_of_id f = "_assume" ->
-      Env.wf_constraint ~at:l env nc;
-      let env = Env.add_constraint nc env in
-      let annotated_exp = annot_exp (E_app (f, [annot_exp (E_constraint nc) bool_typ None])) unit_typ None in
-      annotated_exp :: check_block l env exps ret_typ
-  | E_aux (E_assert (constr_exp, msg), (assert_l, _)) :: exps ->
-      let msg = assert_msg msg in
-      let constr_exp = crule check_exp env constr_exp bool_typ in
-      let checked_msg = crule check_exp env msg string_typ in
-      let env, added_constraint =
-        match assert_constraint env true constr_exp with
-        | Some nc ->
-            typ_print (lazy (adding ^ "constraint " ^ string_of_n_constraint nc ^ " for assert"));
-            (Env.add_constraint ~reason:(assert_l, "assertion") nc env, true)
-        | None -> (env, false)
-      in
-      let texp = annot_exp (E_assert (constr_exp, checked_msg)) unit_typ (Some unit_typ) in
-      let checked_exps = check_block l env exps ret_typ in
-      (* If we can prove false, then any code after the assertion is
-         dead. In this inconsistent typing environment we can do some
-         broken things, so we eliminate this dead code here *)
-      if added_constraint && List.compare_length_with exps 1 >= 0 && prove __POS__ env nc_false then (
-        let ret_typ = List.rev checked_exps |> List.hd |> typ_of in
-        texp :: [crule check_exp env (mk_exp ~loc:assert_l (E_exit (mk_lit_exp L_unit))) ret_typ]
-      )
-      else texp :: checked_exps
-  | (E_aux (E_if (cond, (E_aux (E_throw _, _) | E_aux (E_block [E_aux (E_throw _, _)], _)), _), _) as exp) :: exps ->
-      let texp = crule check_exp env exp (mk_typ (Typ_id (mk_id "unit"))) in
-      let cond' = crule check_exp env cond (mk_typ (Typ_id (mk_id "bool"))) in
-      let env = add_opt_constraint l "if-throw" (Option.map nc_not (assert_constraint env false cond')) env in
-      texp :: check_block l env exps ret_typ
-  | (E_aux (E_if (cond, then_exp, _), _) as exp) :: exps when exp_unconditionally_returns then_exp ->
-      let texp = crule check_exp env exp (mk_typ (Typ_id (mk_id "unit"))) in
-      let cond' = crule check_exp env cond (mk_typ (Typ_id (mk_id "bool"))) in
-      let env = add_opt_constraint l "unconditional if" (Option.map nc_not (assert_constraint env false cond')) env in
-      texp :: check_block l env exps ret_typ
-  | exp :: exps ->
-      let texp = crule check_exp env exp (mk_typ (Typ_id (mk_id "unit"))) in
-      texp :: check_block l env exps ret_typ
+          else (s_p, texp :: checked_exps)
+      | (E_aux (E_if (cond, (E_aux (E_throw _, _) | E_aux (E_block [E_aux (E_throw _, _)], _)), _), _) as exp), _ ->
+          let texp = crule check_exp env exp (mk_typ (Typ_id (mk_id "unit"))) in
+          let cond' = crule check_exp env cond (mk_typ (Typ_id (mk_id "bool"))) in
+          let env = add_opt_constraint l "if-throw" (Option.map nc_not (assert_constraint env false cond')) env in
+          let _, exps = check_block' f_p env exps ret_typ in
+          (s_p, texp :: exps)
+      | (E_aux (E_if (cond, then_exp, _), _) as exp), _ when exp_unconditionally_returns then_exp ->
+          let texp = crule check_exp env exp (mk_typ (Typ_id (mk_id "unit"))) in
+          let cond' = crule check_exp env cond (mk_typ (Typ_id (mk_id "bool"))) in
+          let env =
+            add_opt_constraint l "unconditional if" (Option.map nc_not (assert_constraint env false cond')) env
+          in
+          let _, exps = check_block' f_p env exps ret_typ in
+          (s_p, texp :: exps)
+      | _, _ ->
+          let texp = crule check_exp env exp (mk_typ (Typ_id (mk_id "unit"))) in
+          let _, exps = check_block' f_p env exps ret_typ in
+          (s_p, texp :: exps)
+    )
 
 and check_case env pat_typ pexp typ =
   let pat, guard, case, (l, uannot) = destruct_pexp pexp in
@@ -2653,7 +2720,7 @@ and check_case env pat_typ pexp typ =
         | Some (h, t) ->
             Some
               (List.fold_left
-                 (fun acc guard -> mk_exp ~loc:(hint_loc (exp_loc guard)) (E_app_infix (acc, mk_id "&", guard)))
+                 (fun acc guard -> mk_infix_exp ~loc:(hint_loc (exp_loc guard)) acc (mk_operator "&") guard)
                  h t
               )
         | None -> None
@@ -2671,16 +2738,15 @@ and check_case env pat_typ pexp typ =
   | exception (Type_error _ as typ_exn) -> (
       match pat with
       | P_aux (P_lit lit, (l, _)) ->
-          let guard' = mk_exp (E_app_infix (mk_exp (E_id (mk_id "p#")), mk_id "==", mk_exp (E_lit lit))) in
-          let guard =
-            match guard with None -> guard' | Some guard -> mk_exp (E_app_infix (guard, mk_id "&", guard'))
-          in
+          let guard' = mk_infix_exp (mk_exp (E_id (mk_id "p#"))) (mk_operator "==") (mk_exp (E_lit lit)) in
+          let guard = match guard with None -> guard' | Some guard -> mk_infix_exp guard (mk_operator "&") guard' in
           check_case env pat_typ (Pat_aux (Pat_when (mk_pat ~loc:l (P_id (mk_id "p#")), guard, case), (l, uannot))) typ
       | _ -> raise typ_exn
     )
 
 and check_mpexp other_env env mpexp typ =
   let mpat, guard, (l, _) = destruct_mpexp mpexp in
+  let env = bind_pattern_vector_subranges (pat_of_mpat mpat) env in
   match bind_mpat false other_env env mpat typ with
   | checked_mpat, env, guards ->
       let guard =
@@ -2688,7 +2754,7 @@ and check_mpexp other_env env mpexp typ =
       in
       let guard =
         match guard with
-        | Some (h, t) -> Some (List.fold_left (fun acc guard -> mk_exp (E_app_infix (acc, mk_id "&", guard))) h t)
+        | Some (h, t) -> Some (List.fold_left (fun acc guard -> mk_infix_exp acc (mk_operator "&") guard) h t)
         | None -> None
       in
       let checked_guard, _ =
@@ -2968,7 +3034,7 @@ and bind_pat env (P_aux (pat_aux, (l, uannot)) as pat) typ =
           | P_lit lit ->
               let var = fresh_var () in
               let guard =
-                locate (fun _ -> l) (mk_exp (E_app_infix (mk_exp (E_id var), mk_id "==", mk_exp (E_lit lit))))
+                locate (fun _ -> l) (mk_infix_exp (mk_exp (E_id var)) (mk_operator "==") (mk_exp (E_lit lit)))
               in
               let typed_pat, env, guards = bind_pat env (mk_pat ~loc:l (P_id var)) typ in
               (typed_pat, env, guard :: guards)
@@ -3022,7 +3088,7 @@ and infer_pat env (P_aux (pat_aux, (l, uannot)) as pat) =
       (annot_pat (P_vector pats) (bitvector_typ len), env, guards)
   | P_vector_concat (pat :: pats) -> bind_vector_concat_pat l env uannot pat pats None
   | P_vector_subrange (id, n, m) ->
-      let typ = bitvector_typ_from_range l env n m in
+      let typ = bitvector_typ_from_vector_subrange l env n m in
       (annot_pat (P_vector_subrange (id, n, m)) typ, env, [])
   | P_string_append pats ->
       let fold_pats (pats, env, guards) pat =
@@ -3066,7 +3132,13 @@ and bind_vector_concat_generic :
     let wrap_ok (x, y, z) = (VC_elem_ok x, y, z) in
     let inferred_pat, env, guards' =
       if Option.is_none typ_opt then wrap_ok (funcs.infer env pat)
-      else (try wrap_ok (funcs.infer env pat) with Type_error _ as exn -> (VC_elem_error (pat, exn), env, []))
+      else (
+        try wrap_ok (funcs.infer env pat) with
+        (* A vector subrange error means the whole vector concat is
+             certainly broken, so error out immediately. *)
+        | Type_error (_, Err_vector_subrange _) as exn -> raise exn
+        | Type_error _ as exn -> (VC_elem_error (pat, exn), env, [])
+      )
     in
     (inferred_pat :: pats, env, guards' @ guards)
   in
@@ -3159,7 +3231,7 @@ and bind_vector_concat_generic :
 
     (* Now we have two similar cases for ordinary vectors and bitvectors *)
     match elem_typ with
-    | Some elem_typ ->
+    | Some elem_typ -> (
         let fold_len len pat =
           let l = funcs.get_loc_typed pat in
           let len', elem_typ' = destruct_vector_typ l env (funcs.typ_of pat) in
@@ -3170,19 +3242,18 @@ and bind_vector_concat_generic :
         let before_len = List.fold_left fold_len (nint 0) before_uninferred in
         let after_len = List.fold_left fold_len (nint 0) after_uninferred in
         let inferred_len = nexp_simp (nsum before_len after_len) in
-        begin
-          match uninferred with
-          | Some (total_len, uninferred_pat) ->
-              let total_len = nconstant total_len in
-              let uninferred_len = nexp_simp (nminus total_len inferred_len) in
-              let checked_pat, env, guards' = funcs.bind env uninferred_pat (vector_typ uninferred_len elem_typ) in
-              ( annotate (before_uninferred @ [checked_pat] @ after_uninferred) (vector_typ total_len elem_typ),
-                env,
-                guards' @ guards
-              )
-          | None -> (annotate before_uninferred (dvector_typ env inferred_len elem_typ), env, guards)
-        end
-    | None ->
+        match uninferred with
+        | Some (total_len, uninferred_pat) ->
+            let total_len = nconstant total_len in
+            let uninferred_len = nexp_simp (nminus total_len inferred_len) in
+            let checked_pat, env, guards' = funcs.bind env uninferred_pat (vector_typ uninferred_len elem_typ) in
+            ( annotate (before_uninferred @ [checked_pat] @ after_uninferred) (vector_typ total_len elem_typ),
+              env,
+              guards' @ guards
+            )
+        | None -> (annotate before_uninferred (dvector_typ env inferred_len elem_typ), env, guards)
+      )
+    | None -> (
         let fold_len len pat =
           let l = funcs.get_loc_typed pat in
           let len' = destruct_bitvector_typ l env (funcs.typ_of pat) in
@@ -3192,19 +3263,18 @@ and bind_vector_concat_generic :
         let before_len = List.fold_left fold_len (nint 0) before_uninferred in
         let after_len = List.fold_left fold_len (nint 0) after_uninferred in
         let inferred_len = nexp_simp (nsum before_len after_len) in
-        begin
-          match uninferred with
-          | Some (total_len, uninferred_pat) ->
-              let total_len = nconstant total_len in
-              let uninferred_len = nexp_simp (nminus total_len inferred_len) in
-              let uninferred_len = check_constant_len (funcs.get_loc uninferred_pat) uninferred_len in
-              let checked_pat, env, guards' = funcs.bind env uninferred_pat (bitvector_typ uninferred_len) in
-              ( annotate (before_uninferred @ [checked_pat] @ after_uninferred) (bitvector_typ total_len),
-                env,
-                guards' @ guards
-              )
-          | None -> (annotate before_uninferred (bitvector_typ inferred_len), env, guards)
-        end
+        match uninferred with
+        | Some (total_len, uninferred_pat) ->
+            let total_len = nconstant total_len in
+            let uninferred_len = nexp_simp (nminus total_len inferred_len) in
+            let uninferred_len = check_constant_len (funcs.get_loc uninferred_pat) uninferred_len in
+            let checked_pat, env, guards' = funcs.bind env uninferred_pat (bitvector_typ uninferred_len) in
+            ( annotate (before_uninferred @ [checked_pat] @ after_uninferred) (bitvector_typ total_len),
+              env,
+              guards' @ guards
+            )
+        | None -> (annotate before_uninferred (bitvector_typ inferred_len), env, guards)
+      )
   )
 
 and bind_vector_concat_pat l env uannot pat pats typ_opt =
@@ -3481,7 +3551,7 @@ and infer_lexp env (LE_aux (lexp_aux, (l, uannot)) as lexp) =
       let sum_bitvector_lengths acc (Typ_aux (v_typ_aux, _)) =
         match v_typ_aux with
         | Typ_app (id, [A_aux (A_nexp len, _)]) when Id.compare id (mk_id "bitvector") = 0 -> nsum acc len
-        | _ -> typ_error l "Bitvector concatentation l-expression must only contain bitvector types of the same order"
+        | _ -> typ_error l "Bitvector concatenation l-expression must only contain bitvector types of the same order"
       in
       let inferred_v_lexp = infer_lexp env v_lexp in
       let inferred_v_lexps = List.map (infer_lexp env) v_lexps in
@@ -3657,7 +3727,6 @@ and infer_exp env (E_aux (exp_aux, (l, uannot)) as exp) =
   | E_typ (typ, exp) ->
       let checked_exp = crule check_exp env exp typ in
       annot_exp (E_typ (typ, checked_exp)) typ
-  | E_app_infix (x, op, y) -> infer_exp env (E_aux (E_app (deinfix op, [x; y]), (l, uannot)))
   (* Treat a multiple argument constructor as a single argument constructor taking a tuple, Ctor(x, y) -> Ctor((x, y)). *)
   | E_app (ctor, x :: y :: zs) when Env.is_union_constructor ctor env ->
       typ_print (lazy ("Inferring multiple argument constructor: " ^ string_of_id ctor));
@@ -3708,12 +3777,31 @@ and infer_exp env (E_aux (exp_aux, (l, uannot)) as exp) =
       let tree, _ = filter_overload_tree env tree in
       let exp, env = overload_tree_to_exp env tree in
       infer_exp env exp
-  | E_app (f, [x; y]) when string_of_id f = "and_bool" || string_of_id f = "or_bool" -> begin
+  | E_app (f, [x; y]) when is_and_bool f || is_or_bool f -> begin
       match destruct_exist (typ_of (irule infer_exp env y)) with
       | None | Some (_, NC_aux (NC_true, _), _) -> infer_funapp l env f [x; y] uannot None
       | Some _ -> infer_funapp l env f [x; mk_exp (E_typ (bool_typ, y))] uannot None
       | exception Type_error _ -> infer_funapp l env f [x; mk_exp (E_typ (bool_typ, y))] uannot None
     end
+  | E_app (Id_aux (Id "vector_access#", _), [v; n]) -> (
+      try infer_exp env (E_aux (E_app (mk_id "vector_access", [v; n]), (l, uannot))) with
+      | Type_error (err_l, err) -> (
+          try
+            let inferred_v = infer_exp env v in
+            match (typ_of inferred_v, n) with
+            | Typ_aux (Typ_id id, _), E_aux (E_id field, _) ->
+                let access_id = (Bitfield.field_accessor_ids id field).get in
+                infer_exp env (mk_exp ~loc:l (E_app (access_id, [v])))
+            | _, _ -> typ_error l "Vector access could not be interpreted as a bitfield access"
+          with Type_error (err_l', err') -> typ_raise err_l (err_because (err, err_l', err'))
+        )
+      | exn -> raise exn
+    )
+  | E_app (Id_aux (Id "vector_subrange#", _), [v; n; m]) ->
+      infer_exp env (E_aux (E_app (mk_id "vector_subrange", [v; n; m]), (l, uannot)))
+  | E_app (Id_aux (Id "vector_update#", _), [v; n; exp]) -> infer_vector_update env v n exp l uannot
+  | E_app (Id_aux (Id "vector_update_subrange#", _), [v; n; m; exp]) ->
+      infer_exp env (E_aux (E_app (mk_id "vector_update_subrange", [v; n; m; exp]), (l, uannot)))
   | E_app (f, xs) -> infer_funapp l env f xs uannot None
   | E_loop (loop_type, measure, cond, body) ->
       let checked_cond = crule check_exp env cond bool_typ in
@@ -3794,8 +3882,10 @@ and infer_exp env (E_aux (exp_aux, (l, uannot)) as exp) =
       | Left (_, Some _), Left (_, None) | Left (_, None), Left (_, Some _) ->
           typ_error l ("Incompatible types: " ^ string_of_exp then_branch ^ " vs " ^ string_of_exp else_branch)
       (* One branch is a simple numeric type but the type of the other branch couldn't be inferred. *)
-      | Left (_, Some _), _ -> typ_error l ("Could not infer type of " ^ string_of_exp else_branch)
-      | _, Left (_, Some _) -> typ_error l ("Could not infer type of " ^ string_of_exp then_branch)
+      | Left (_, Some _), Right (l', err) ->
+          typ_raise l (err_because (Err_other ("Could not infer type of " ^ string_of_exp else_branch), l', err))
+      | Right (l', err), Left (_, Some _) ->
+          typ_raise l (err_because (Err_other ("Could not infer type of " ^ string_of_exp then_branch), l', err))
       (* Neither branch is a simple numeric type, but we inferred the `then` branch. *)
       | Left (then_branch', None), _ ->
           let other_branch, inferred_typ = one_branch_inferred then_branch' else_branch else_env in
@@ -3813,28 +3903,8 @@ and infer_exp env (E_aux (exp_aux, (l, uannot)) as exp) =
                )
             )
     end
-  | E_vector_access (v, n) -> begin
-      try infer_exp env (E_aux (E_app (mk_id "vector_access", [v; n]), (l, uannot))) with
-      | Type_error (err_l, err) -> (
-          try
-            let inferred_v = infer_exp env v in
-            begin
-              match (typ_of inferred_v, n) with
-              | Typ_aux (Typ_id id, _), E_aux (E_id field, _) ->
-                  let access_id = (Bitfield.field_accessor_ids id field).get in
-                  infer_exp env (mk_exp ~loc:l (E_app (access_id, [v])))
-              | _, _ -> typ_error l "Vector access could not be interpreted as a bitfield access"
-            end
-          with Type_error (err_l', err') -> typ_raise err_l (err_because (err, err_l', err'))
-        )
-      | exn -> raise exn
-    end
-  | E_vector_update (v, n, exp) -> infer_vector_update l env v n exp
-  | E_vector_update_subrange (v, n, m, exp) ->
-      infer_exp env (E_aux (E_app (mk_id "vector_update_subrange", [v; n; m; exp]), (l, uannot)))
   | E_vector_append (v1, E_aux (E_vector [], _)) -> infer_exp env v1
   | E_vector_append (v1, v2) -> infer_exp env (E_aux (E_app (mk_id "append", [v1; v2]), (l, uannot)))
-  | E_vector_subrange (v, n, m) -> infer_exp env (E_aux (E_app (mk_id "vector_subrange", [v; n; m]), (l, uannot)))
   | E_vector [] -> typ_error l "Cannot infer type of empty vector"
   | E_vector (item :: items as vec) ->
       let inferred_item = irule infer_exp env item in
@@ -3918,22 +3988,23 @@ and infer_exp env (E_aux (exp_aux, (l, uannot)) as exp) =
 
 and infer_funapp l env f xs uannot ret_ctx_typ = infer_funapp' l env f (Env.get_val_spec f env) xs uannot ret_ctx_typ
 
-and infer_vector_update l env v n exp =
+and infer_vector_update env v n exp l uannot =
   let rec nested_updates acc = function
-    | E_aux (E_vector_update (v, n, exp), (l, _)) -> nested_updates ((n, exp, l) :: acc) v
+    | E_aux (E_app (Id_aux (Id "vector_update#", _), [v; n; exp]), (l, uannot)) ->
+        nested_updates ((n, exp, l, uannot) :: acc) v
     | v -> (v, List.rev acc)
   in
-  let v, updates = nested_updates [(n, exp, l)] v in
+  let v, updates = nested_updates [(n, exp, l, uannot)] v in
   let inferred_v = infer_exp env v in
   match typ_of inferred_v with
   | Typ_aux (Typ_id id, _) when Env.is_bitfield id env ->
       let update_exp =
         List.fold_left
-          (fun v (field, exp, l) ->
+          (fun v (field, exp, l, uannot) ->
             match field with
             | E_aux (E_id field_id, (field_id_loc, _)) ->
                 let (Id_aux (update_name, _)) = (Bitfield.field_accessor_ids id field_id).update in
-                mk_exp ~loc:l (E_app (Id_aux (update_name, field_id_loc), [v; exp]))
+                E_aux (E_app (Id_aux (update_name, field_id_loc), [v; exp]), (l, uannot))
             | _ -> typ_error l "Vector update could not be interpreted as a bitfield update"
           )
           v (List.rev updates)
@@ -3942,7 +4013,7 @@ and infer_vector_update l env v n exp =
   | _ ->
       let update_exp =
         List.fold_left
-          (fun v (n, exp, l) -> mk_exp ~loc:l (E_app (mk_id "vector_update", [v; n; exp])))
+          (fun v (n, exp, l, uannot) -> E_aux (E_app (mk_id "vector_update", [v; n; exp]), (l, uannot)))
           v (List.rev updates)
       in
       infer_exp env update_exp
@@ -4389,7 +4460,7 @@ and bind_mpat allow_unknown other_env env (MP_aux (mpat_aux, (l, uannot)) as mpa
           match mpat_aux with
           | MP_lit lit ->
               let var = fresh_var () in
-              let guard = mk_exp ~loc:l (E_app_infix (mk_exp (E_id var), mk_id "==", mk_exp (E_lit lit))) in
+              let guard = mk_infix_exp ~loc:l (mk_exp (E_id var)) (mk_operator "==") (mk_exp (E_lit lit)) in
               let typed_mpat, env, guards = bind_mpat allow_unknown other_env env (mk_mpat (MP_id var)) typ in
               (typed_mpat, env, guard :: guards)
           | _ -> raise typ_exn
@@ -4584,9 +4655,11 @@ let check_mapcl env (MCL_aux (cl, (def_annot, _))) typ =
       | MCL_bidir (left_mpexp, right_mpexp) -> begin
           let left_mpat, _, _ = destruct_mpexp left_mpexp in
           let left_dups = check_pattern_duplicates env (pat_of_mpat left_mpat) in
+          check_pattern_vector_subranges (pat_of_mpat left_mpat) env;
           let left_env = find_types env left_mpat typ1 in
           let right_mpat, _, _ = destruct_mpexp right_mpexp in
           let right_dups = check_pattern_duplicates env (pat_of_mpat right_mpat) in
+          check_pattern_vector_subranges (pat_of_mpat right_mpat) env;
           let right_env = find_types env right_mpat typ2 in
           same_bindings ~at:def_annot.loc ~env ~left_env ~right_env left_dups right_dups;
 
@@ -4842,7 +4915,7 @@ let check_mapdef env def_annot (MD_aux (MD_mapping (id, tannot_opt, mapcls), (l,
   end;
   (* If we have a val spec, then the mapping itself shouldn't be marked as private *)
   let fix_body_visibility =
-    match (have_val_spec, def_annot.visibility) with
+    match (have_val_spec, def_annot.Coq_def_annot.visibility) with
     | Some vs_l, Private priv_l ->
         raise
           (Reporting.err_general
@@ -4945,14 +5018,14 @@ let check_type_union u_l non_rec_env env variant typq (Tu_aux (Tu_ty_id (arg_typ
 
 let check_record l env def_annot id typq fields =
   forbid_recursive_types l (fun () ->
-      List.iter (fun ((Typ_aux (_, l) as field), _) -> wf_binding l env (typq, field)) fields
+      List.iter (fun ((_, (Typ_aux (_, l) as field)), _) -> wf_binding l env (typq, field)) fields
   );
   let env =
     try
       match get_def_attribute "bitfield" def_annot with
       | Some _ when not (Env.is_bitfield id env) -> begin
           match fields with
-          | [(typ, Id_aux (Id "bits", _))] -> Env.add_bitfield id typ Bindings.empty env
+          | [((Id_aux (Id "bits", _), typ), _)] -> Env.add_bitfield id typ Bindings.empty env
           | _ -> typ_raise l (Err_other "bitfield record has wrong fields")
         end
       | _ -> env
@@ -4977,7 +5050,12 @@ let rec check_typedef : Env.t -> env def_annot -> uannot type_def -> typed_def l
       begin
         match typ_arg with
         | A_aux (A_typ typ, a_l) -> forbid_recursive_types l (fun () -> wf_binding a_l env (typq, typ))
-        | _ -> ()
+        | A_aux (A_nexp nexp, a_l) ->
+            let env = Env.add_typquant l typq env in
+            Env.wf_nexp ~at:a_l env nexp
+        | A_aux (A_bool nc, a_l) ->
+            let env = Env.add_typquant l typq env in
+            Env.wf_constraint ~at:a_l env nc
       end;
       ([DEF_aux (DEF_type (TD_aux (tdef, (l, empty_tannot))), def_annot)], Env.add_typ_synonym id typq typ_arg env)
   | TD_abstract (id, kind, _) -> begin
@@ -5003,7 +5081,7 @@ let rec check_typedef : Env.t -> env def_annot -> uannot type_def -> typed_def l
                 (Initial_check.generate_undefined_record_context typq)
             in
             let gen_undefined =
-              List.for_all (fun (typ, field_id) -> can_be_undefined ~at:(id_loc field_id) field_env typ) fields
+              List.for_all (fun ((field_id, typ), _) -> can_be_undefined ~at:(id_loc field_id) field_env typ) fields
             in
             if (not gen_undefined) && Option.is_none attr then (
               (* If we cannot generate an undefined value, and we weren't explicitly asked to *)
@@ -5047,7 +5125,8 @@ let rec check_typedef : Env.t -> env def_annot -> uannot type_def -> typed_def l
         rec_env |> fun env -> List.fold_left (fun env tu -> check_type_union l non_rec_env env id typq tu) env arms
       in
       ([DEF_aux (DEF_type (TD_aux (tdef, (l, empty_tannot))), def_annot)], env)
-  | TD_enum (id, ids, _) ->
+  | TD_enum (id, members, _) ->
+      let ids = List.map fst members in
       let env = Env.add_enum id ids env in
       (* If the enumeration has the "enum_vector" attribute, we will generate a
          top-level letbinding which is a vector of all the members. *)
@@ -5107,9 +5186,9 @@ let rec check_typedef : Env.t -> env def_annot -> uannot type_def -> typed_def l
               | BF_aux (BF_concat (r1, r2), l) ->
                   BF_aux (BF_concat (expand_range_synonyms r1, expand_range_synonyms r2), l)
             in
-            let record_tdef = TD_record (id, mk_typquant [], [(typ, mk_id "bits")], false) in
+            let record_tdef = TD_record (id, mk_typquant [], [((mk_id "bits", typ), mk_def_annot l ())], false) in
             let ranges =
-              List.map (fun (f, r) -> (f, expand_range_synonyms r)) ranges |> List.to_seq |> Bindings.of_seq
+              List.map (fun ((f, r), _) -> (f, expand_range_synonyms r)) ranges |> List.to_seq |> Bindings.of_seq
             in
             (* This would cause us to fail later, but with a potentially confusing error message *)
             Bindings.iter
@@ -5143,16 +5222,16 @@ and check_scattered : Env.t -> env def_annot -> uannot scattered_def -> typed_de
   match sdef with
   | SD_function (id, tannot_opt) ->
       ( [DEF_aux (DEF_scattered (SD_aux (SD_function (id, tannot_opt), (l, empty_tannot))), def_annot)],
-        Env.add_scattered_id id def_annot.attrs env
+        Env.add_scattered_id id (get_def_attributes def_annot) env
       )
   | SD_mapping (id, tannot_opt) ->
       ( [DEF_aux (DEF_scattered (SD_aux (SD_mapping (id, tannot_opt), (l, empty_tannot))), def_annot)],
-        Env.add_scattered_id id def_annot.attrs env
+        Env.add_scattered_id id (get_def_attributes def_annot) env
       )
   | SD_end id -> ([], Env.end_scattered_id ~at:l id env)
   | SD_enum id ->
       ( [DEF_aux (DEF_scattered (SD_aux (SD_enum id, (l, empty_tannot))), def_annot)],
-        Env.add_scattered_enum id def_annot.attrs env
+        Env.add_scattered_enum id (get_def_attributes def_annot) env
       )
   | SD_enumcl (id, member) ->
       ( [DEF_aux (DEF_scattered (SD_aux (SD_enumcl (id, member), (l, empty_tannot))), def_annot)],
@@ -5193,14 +5272,14 @@ and check_scattered : Env.t -> env def_annot -> uannot scattered_def -> typed_de
       let funcl_env = Env.add_typquant fcl_def_annot.loc typq env in
       let funcl = check_funcl funcl_env funcl typ in
       ( [DEF_aux (DEF_scattered (SD_aux (SD_funcl funcl, (l, mk_tannot ~uannot funcl_env typ))), def_annot)],
-        Env.add_scattered_id id def_annot.attrs env
+        Env.add_scattered_id id (get_def_attributes def_annot) env
       )
   | SD_mapcl (id, mapcl) ->
       let typq, typ = Env.get_val_spec id env in
       let mapcl_env = Env.add_typquant l typq env in
       let mapcl = check_mapcl mapcl_env mapcl typ in
       ( [DEF_aux (DEF_scattered (SD_aux (SD_mapcl (id, mapcl), (l, empty_tannot))), def_annot)],
-        Env.add_scattered_id id def_annot.attrs env
+        Env.add_scattered_id id (get_def_attributes def_annot) env
       )
 
 and check_outcome : Env.t -> outcome_spec -> untyped_def list -> outcome_spec * typed_def list * Env.t =
@@ -5384,6 +5463,15 @@ and check_def : Env.t -> untyped_def -> typed_def list * Env.t =
   | DEF_instantiation (ispec, substs) -> check_outcome_instantiation env def_annot ispec substs
   | DEF_default default -> check_default env def_annot default
   | DEF_overload (id, ids) -> ([DEF_aux (DEF_overload (id, ids), def_annot)], Env.add_overloads def_annot.loc id ids env)
+  | DEF_register (DEC_aux (DEC_reg (typ, id, None), (l, uannot)))
+    when Option.is_some (get_def_attribute "initialized_elsewhere" def_annot) ->
+      let env = Env.add_register id typ env in
+      ( [
+          DEF_aux
+            (DEF_register (DEC_aux (DEC_reg (typ, id, None), (l, mk_expected_tannot env typ (Some typ)))), def_annot);
+        ],
+        env
+      )
   | DEF_register (DEC_aux (DEC_reg (typ, id, None), (l, uannot))) -> begin
       Env.wf_typ ~at:l env typ;
       match typ with

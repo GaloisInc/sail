@@ -53,6 +53,7 @@ let opt_assert_to_exception = ref false
 let opt_branch_coverage = ref None
 let opt_build = ref false
 let opt_generate_header = ref false
+let opt_static = ref false
 let opt_includes_c : string list ref = ref []
 let opt_includes_h : string list ref = ref []
 let opt_no_lib = ref false
@@ -61,17 +62,20 @@ let opt_no_mangle = ref false
 let opt_no_rts = ref false
 let opt_preserve_types = ref IdSet.empty
 let opt_specialize_c = ref false
+let opt_cpp_class_name = ref "Model"
+let opt_cpp_namespace = ref "model"
+let opt_cpp_derive_from = ref None
 
 let c_options =
   [
-    (Flag.create ~prefix:["c"] "build", Arg.Set opt_build, "build the generated C output automatically");
+    (Flag.create ~prefix:["c"] "build", Arg.Set opt_build, "build the generated C/C++ output automatically");
     ( Flag.create ~prefix:["c"] ~arg:"filename" "include",
       Arg.String (fun i -> opt_includes_c := i :: !opt_includes_c),
-      "provide additional include for C output"
+      "provide additional include for C/C++ implementation output"
     );
     ( Flag.create ~prefix:["c"] ~arg:"filename" "header_include",
-      Arg.String (fun i -> opt_includes_c := i :: !opt_includes_h),
-      "provide additional include for C header output"
+      Arg.String (fun i -> opt_includes_h := i :: !opt_includes_h),
+      "provide additional include for C/C++ header output"
     );
     (Flag.create ~prefix:["c"] "no_mangle", Arg.Set opt_no_mangle, "produce readable names");
     (Flag.create ~prefix:["c"] "no_main", Arg.Set opt_no_main, "do not generate the main() function");
@@ -82,30 +86,31 @@ let c_options =
     );
     ( Flag.create ~prefix:["c"] ~arg:"prefix" "prefix",
       Arg.String (fun prefix -> C_backend.opt_prefix := prefix),
-      "prefix generated C functions"
+      "prefix generated C/C++ functions"
     );
-    (Flag.create ~prefix:["c"] "generate_header", Arg.Set opt_generate_header, "generate a separate header file");
+    (* This flag is deprecated and will be removed in future. A header is always generated. *)
+    (Flag.create ~prefix:["c"] "generate_header", Arg.Set opt_generate_header, "");
     ( Flag.create ~prefix:["c"] ~arg:"parameters" "extra_params",
       Arg.String (fun params -> C_backend.opt_extra_params := Some params),
-      "generate C functions with additional parameters"
+      "generate C/C++ functions with additional parameters"
     );
     ( Flag.create ~prefix:["c"] ~arg:"arguments" "extra_args",
       Arg.String (fun args -> C_backend.opt_extra_arguments := Some args),
-      "supply extra argument to every generated C function call"
+      "supply extra argument to every generated C/C++ function call"
     );
-    (Flag.create ~prefix:["c"] "specialize", Arg.Set opt_specialize_c, "specialize integer arguments in C output");
+    (Flag.create ~prefix:["c"] "specialize", Arg.Set opt_specialize_c, "specialize integer arguments in C/C++ output");
     ( Flag.create ~prefix:["c"] "preserve",
       Arg.String (fun str -> Specialize.add_initial_calls (IdSet.singleton (mk_id str))),
-      "make sure the provided function identifier is preserved in C output"
+      "make sure the provided function identifier is preserved in C/C++ output"
     );
     (Flag.create ~prefix:["c"] "assert_to_exception", Arg.Set opt_assert_to_exception, "turn assertions into exceptions");
     ( Flag.create ~prefix:["c"] "preserve_type",
       Arg.String (fun str -> opt_preserve_types := IdSet.add (mk_id str) !opt_preserve_types),
-      "make sure the provided type identifier is preserved in the C output"
+      "make sure the provided type identifier is preserved in the C/C++ output"
     );
     ( Flag.create ~prefix:["c"] "fold_unit",
       Arg.String (fun str -> Constant_fold.opt_fold_to_unit := Util.split_on_char ',' str),
-      "remove comma separated list of functions from C output, replacing them with unit"
+      "remove comma separated list of functions from C/C++ output, replacing them with unit"
     );
     ( Flag.create ~prefix:["c"] ~arg:"file" "coverage",
       Arg.String (fun str -> opt_branch_coverage := Some (open_out str)),
@@ -119,7 +124,7 @@ let c_options =
           Arg.Set Initial_check.opt_fast_undefined;
           Arg.Set C_backend.optimize_alias;
         ],
-      "turn on optimizations for C compilation"
+      "turn on optimizations for C/C++ compilation"
     );
     ( Flag.create ~prefix:["c"] ~hide_prefix:true "Ofixed_int",
       Arg.Set C_backend.optimize_fixed_int,
@@ -129,16 +134,38 @@ let c_options =
       Arg.Set C_backend.optimize_fixed_bits,
       "assume fixed size bitvectors rather than arbitrary precision bitvectors"
     );
-    ( Flag.create ~prefix:["c"] ~hide_prefix:true "static",
-      Arg.Set C_backend.opt_static,
-      "make generated C functions static"
+    (* This flag is deprecated and will be removed in future. *)
+    (Flag.create ~prefix:["c"] ~hide_prefix:true "static", Arg.Set opt_static, "");
+  ]
+
+(* Additional options when compiling in C++ mode. *)
+let cpp_options =
+  [
+    ( Flag.create ~prefix:["cpp"] ~arg:"identifier" "class_name",
+      Arg.String (fun args -> opt_cpp_class_name := args),
+      "C++ class name (default 'Model')"
+    );
+    ( Flag.create ~prefix:["cpp"] ~arg:"identifier" "namespace",
+      Arg.String (fun args -> opt_cpp_namespace := args),
+      "C++ namespace name (default 'model')"
+    );
+    ( Flag.create ~prefix:["cpp"] ~arg:"list" "derive_from",
+      Arg.String (fun args -> opt_cpp_derive_from := Some args),
+      "List of classes/structs to derive the model class from, e.g. 'public foo, private bar'"
     );
   ]
 
-let c_rewrites =
+(* The C backend can output in C or C++ mode. *)
+type c_backend_mode = C | Cpp
+
+(* Convert the mode to a string. This can be used as the target name and file extension. *)
+let string_of_mode = function C -> "c" | Cpp -> "cpp"
+
+let c_cpp_rewrites (mode : c_backend_mode) =
+  let target_name = string_of_mode mode in
   let open Rewrites in
   [
-    ("instantiate_outcomes", [String_arg "c"]);
+    ("instantiate_outcomes", [String_arg target_name]);
     ("realize_mappings", []);
     ("remove_vector_subrange_pats", []);
     ("toplevel_string_append", []);
@@ -148,8 +175,8 @@ let c_rewrites =
     ("mono_rewrites", [If_flag opt_mono_rewrites]);
     ("recheck_defs", [If_flag opt_mono_rewrites]);
     ("toplevel_nexps", [If_mono_arg]);
-    ("monomorphise", [String_arg "c"; If_mono_arg]);
-    ("atoms_to_singletons", [String_arg "c"; If_mono_arg]);
+    ("monomorphise", [String_arg target_name; If_mono_arg]);
+    ("atoms_to_singletons", [String_arg target_name; If_mono_arg]);
     ("recheck_defs", [If_mono_arg]);
     ("undefined", [Bool_arg false]);
     ("vector_string_pats_to_bit_list", []);
@@ -163,10 +190,13 @@ let c_rewrites =
     ("exp_lift_assign", []);
     ("merge_function_clauses", []);
     ("recheck_defs", []);
-    ("constant_fold", [String_arg "c"]);
+    ("constant_fold", [String_arg target_name]);
   ]
 
-let collect_c_name_info ast =
+(* Find overides (`$c_override` directive) and reserved works
+   (`$c_reserved` directive, and extern functions). *)
+let collect_c_name_info ast (mode : c_backend_mode) =
+  let target_name = string_of_mode mode in
   let open Ast in
   let open Ast_defs in
   let reserved = ref Util.StringSet.empty in
@@ -174,7 +204,9 @@ let collect_c_name_info ast =
   List.iter
     (function
       | DEF_aux (DEF_val (VS_aux (VS_val_spec (_, _, extern), _)), _) -> (
-          match extern_assoc "c" extern with Some name -> reserved := Util.StringSet.add name !reserved | None -> ()
+          match extern_assoc target_name extern with
+          | Some name -> reserved := Util.StringSet.add name !reserved
+          | None -> ()
         )
       | DEF_aux (DEF_pragma ("c_reserved", Pragma_line (name, _)), _) -> reserved := Util.StringSet.add name !reserved
       | DEF_aux (DEF_pragma ("c_override", Pragma_structured data), def_annot) -> (
@@ -187,11 +219,10 @@ let collect_c_name_info ast =
     ast.defs;
   (!reserved, !overrides)
 
-let c_target out_file { ast; effect_info; env; default_sail_dir; _ } =
-  let reserveds, overrides = collect_c_name_info ast in
+let c_target (mode : c_backend_mode) out_file { ast; effect_info; env; default_sail_dir; _ } =
+  let reserveds, overrides = collect_c_name_info ast mode in
 
   let module Codegen = C_backend.Codegen (struct
-    let generate_header = !opt_generate_header
     let includes = !opt_includes_c
     let header_includes = !opt_includes_h
     let no_main = !opt_no_main
@@ -203,34 +234,36 @@ let c_target out_file { ast; effect_info; env; default_sail_dir; _ } =
     let branch_coverage = !opt_branch_coverage
     let assert_to_exception = !opt_assert_to_exception
     let preserve_types = !opt_preserve_types
+
+    (* TODO: Convert `cpp` to use `c_backend_mode` instead of `bool`. *)
+    let cpp = match mode with C -> false | Cpp -> true
+    let cpp_class_name = !opt_cpp_class_name
+    let cpp_namespace = !opt_cpp_namespace
+    let cpp_derive_from = !opt_cpp_derive_from
   end) in
   Reporting.opt_warnings := true;
-  let echo_output, out_file = match out_file with Some f -> (false, f) | None -> (true, "out") in
+
+  if !opt_generate_header then
+    Reporting.warn "Deprecated" Parse_ast.Unknown
+      "--c-generate-header is deprecated and has no effect; headers are now always generated";
+
+  if !opt_static then
+    Reporting.warn "Deprecated" Parse_ast.Unknown "--static is deprecated and no longer has any effect";
+
+  let out_file = Option.value out_file ~default:"out" in
   let basename = Filename.basename out_file in
 
-  let header_opt, impl = Codegen.compile_ast env effect_info basename ast in
+  let header, impl = Codegen.compile_ast env effect_info basename ast in
 
-  let impl_out = Util.open_output_with_check (out_file ^ ".c") in
+  let impl_out = Util.open_output_with_check (out_file ^ "." ^ string_of_mode mode) in
   output_string impl_out.channel impl;
   flush impl_out.channel;
   Util.close_output_with_check impl_out;
 
-  ( match header_opt with
-  | None -> ()
-  | Some header ->
-      let header_out = Util.open_output_with_check (out_file ^ ".h") in
-      output_string header_out.channel header;
-      flush header_out.channel;
-      Util.close_output_with_check header_out
-  );
-
-  if echo_output then (
-    Reporting.warn "Deprecated" Parse_ast.Unknown
-      "The default behaviour of printing C output to stdout when no output file is specified is deprecated. use the -o \
-       option to specify a file name";
-    output_string stdout impl;
-    flush stdout
-  );
+  let header_out = Util.open_output_with_check (out_file ^ ".h") in
+  output_string header_out.channel header;
+  flush header_out.channel;
+  Util.close_output_with_check header_out;
 
   if !opt_build then (
     let sail_dir = Reporting.get_sail_dir default_sail_dir in
@@ -244,5 +277,11 @@ let _ =
   Pragma.register "c_in_main_post";
   Pragma.register "c_reserved";
   Pragma.register "c_override";
-  Target.register ~name:"c" ~options:c_options ~rewrites:c_rewrites ~supports_abstract_types:true
-    ~supports_runtime_config:true c_target
+  ignore
+    (Target.register ~name:"c" ~options:c_options ~rewrites:(c_cpp_rewrites C) ~supports_abstract_types:true
+       ~supports_runtime_config:true (c_target C)
+    );
+  ignore
+    (Target.register ~name:"cpp" ~options:cpp_options ~rewrites:(c_cpp_rewrites Cpp) ~supports_abstract_types:true
+       ~supports_runtime_config:true (c_target Cpp)
+    )

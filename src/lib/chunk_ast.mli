@@ -60,14 +60,15 @@ type match_kind = Try_match | Match_match
 
 val match_keywords : match_kind -> string * string option
 
-val comment_type_delimiters : Lexer.comment_type -> string * string
+val comment_type_delimiters : Parse_ast.comment_type -> string * string
 
 type infix_chunk = Infix_prefix of string | Infix_op of string | Infix_chunks of chunks
 
 and chunk =
-  | Comment of Lexer.comment_type * int * int * string * bool
-  | Doc_comment of string
+  | Comment of Parse_ast.comment_type * int * int * string * bool
+  | Doc_comment of Parse_ast.doc_comment
   | Spacer of bool * int
+  | Attribute of string * chunks
   | Function of {
       id : Parse_ast.id;
       clause : bool;
@@ -75,11 +76,12 @@ and chunk =
       typq_opt : chunks option;
       return_typ_opt : chunks option;
       funcls : (chunks * pexp_chunks) list;
+      hanging : bool;
     }
   | Val of { id : Parse_ast.id; extern_opt : Parse_ast.extern option; typq_opt : chunks option; typ : chunks }
   | Enum of { id : Parse_ast.id; enum_functions : chunks list option; members : chunks list }
   | Function_typ of { mapping : bool; lhs : chunks; rhs : chunks }
-  | Exists of { vars : chunks; constr : chunks; typ : chunks }
+  | Exists of { vars : chunks; constr : chunks option; typ : chunks }
   | Typ_quant of { vars : chunks; constr_opt : chunks option }
   | App of Parse_ast.id * chunks list
   | Field of chunks * Parse_ast.id
@@ -87,10 +89,12 @@ and chunk =
   | Intersperse of string * chunks list
   | Atom of string
   | String_literal of string
+  | Multiline_string_literal of string list
   | Pragma of string * string
   | Unary of string * chunks
   | Binary of chunks * string * chunks
-  | Ternary of chunks * string * chunks * string * chunks
+  | Vector_binary of chunks * string * chunks
+  | Assign of chunks * (string * chunks) option * string * chunks
   | Infix_sequence of infix_chunk list
   | Index of chunks * chunks
   | Delim of string
@@ -111,13 +115,13 @@ and chunk =
       body : chunks;
     }
   | While of { repeat_until : bool; termination_measure : chunks option; cond : chunks; body : chunks }
-  | Vector_updates of chunks * chunk list
+  | Vector_updates of chunks * chunks list
   | Chunks of chunks
   | Raw of string
 
 and chunks = chunk Queue.t
 
-and pexp_chunks = { funcl_space : bool; pat : chunks; guard : chunks option; body : chunks }
+and pexp_chunks = { funcl_space : bool; attr : chunks option; pat : chunks; guard : chunks option; body : chunks }
 
 val prerr_chunk : string -> chunk -> unit
 

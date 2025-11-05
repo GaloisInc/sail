@@ -218,8 +218,9 @@ let rec drop_casts = function E_aux (E_typ (_, e), _) -> drop_casts e | exp -> e
 
 let construct_lit_vector args =
   let rec aux l = function
-    | [] -> Some (L_aux (L_bin (String.concat "" (List.rev l)), Unknown))
-    | E_aux (E_lit (L_aux (((L_zero | L_one) as lit), _)), _) :: t -> aux ((if lit = L_zero then "0" else "1") :: l) t
+    | [] -> Some (L_aux (L_bin (non_empty_singleton (List.rev l)), Unknown))
+    | E_aux (E_lit (L_aux (((L_zero | L_one) as lit), _)), _) :: t ->
+        aux ((if lit = L_zero then Bin_0 else Bin_1) :: l) t
     | _ -> None
   in
   aux [] args
@@ -263,7 +264,7 @@ module StringMap = Map.Make (String)
 (* This is set up so that a partially applied version can be used multiple
    times, reducing start up time. *)
 
-let const_props target ast =
+let const_props target env ast =
   (* Constant-fold function applications with constant arguments *)
   let interpreter_istate =
     (* Do not interpret undefined_X functions *)
@@ -271,7 +272,7 @@ let const_props target ast =
     let undefined_builtin_ids = ids_of_defs (Initial_check.undefined_builtin_val_specs ()) in
     let remove_primop id = StringMap.remove (string_of_id id) in
     let remove_undefined_primops = IdSet.fold remove_primop undefined_builtin_ids in
-    let lstate, gstate = Constant_fold.initial_state ast Type_check.initial_env in
+    let lstate, gstate = Constant_fold.initial_state ast env in
     (lstate, { gstate with primops = remove_undefined_primops gstate.primops })
   in
   let const_fold exp =
@@ -325,17 +326,6 @@ let const_props target ast =
         let e2', _ = const_prop_exp substs assigns e2 in
         let e3', _ = const_prop_exp substs assigns e3 in
         (e1', e2', e3', assigns)
-      in
-      let non_det_exp_4 e1 e2 e3 e4 =
-        let assigned_in_e12 = IdSet.union (assigned_vars e1) (assigned_vars e2) in
-        let assigned_in_e123 = IdSet.union assigned_in_e12 (assigned_vars e3) in
-        let assigned_in_e1234 = IdSet.union assigned_in_e123 (assigned_vars e4) in
-        let assigns = isubst_minus_set assigns assigned_in_e1234 in
-        let e1', _ = const_prop_exp substs assigns e1 in
-        let e2', _ = const_prop_exp substs assigns e2 in
-        let e3', _ = const_prop_exp substs assigns e3 in
-        let e4', _ = const_prop_exp substs assigns e4 in
-        (e1', e2', e3', e4', assigns)
       in
       let rewrap e = E_aux (e, (l, annot)) in
       let re e assigns = (rewrap e, assigns) in
@@ -436,18 +426,6 @@ let const_props target ast =
           begin
             match construct_lit_vector es' with None -> re (E_vector es') assigns | Some lit -> re (E_lit lit) assigns
           end
-      | E_vector_access (e1, e2) ->
-          let e1', e2', assigns = non_det_exp_2 e1 e2 in
-          re (E_vector_access (e1', e2')) assigns
-      | E_vector_subrange (e1, e2, e3) ->
-          let e1', e2', e3', assigns = non_det_exp_3 e1 e2 e3 in
-          re (E_vector_subrange (e1', e2', e3')) assigns
-      | E_vector_update (e1, e2, e3) ->
-          let e1', e2', e3', assigns = non_det_exp_3 e1 e2 e3 in
-          re (E_vector_update (e1', e2', e3')) assigns
-      | E_vector_update_subrange (e1, e2, e3, e4) ->
-          let e1', e2', e3', e4', assigns = non_det_exp_4 e1 e2 e3 e4 in
-          re (E_vector_update_subrange (e1', e2', e3', e4')) assigns
       | E_vector_append (e1, e2) ->
           let e1', e2', assigns = non_det_exp_2 e1 e2 in
           re (E_vector_append (e1', e2')) assigns
@@ -597,7 +575,7 @@ let const_props target ast =
       | E_internal_assume (nc, e) ->
           let e', _ = const_prop_exp substs assigns e in
           re (E_internal_assume (nc, e')) assigns
-      | E_app_infix _ | E_internal_plet _ | E_internal_return _ | E_internal_value _ ->
+      | E_internal_plet _ | E_internal_return _ | E_internal_value _ ->
           raise
             (Reporting.err_unreachable l __POS__
                ("Unexpected expression encountered in monomorphisation: " ^ string_of_exp exp)
@@ -849,8 +827,8 @@ let const_props target ast =
 
     (const_prop_exp, const_prop_pexp)
 
-let const_prop target d =
-  let f = const_props target d in
+let const_prop target env d =
+  let f = const_props target env d in
   fun r -> fst (f r)
 
 let referenced_vars exp =

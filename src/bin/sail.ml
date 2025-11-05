@@ -52,7 +52,7 @@ open Sail_options
 type version = { major : int; minor : int; patch : int }
 
 (* Current version of Sail. Must be updated manually. *)
-let version = { major = 0; minor = 19; patch = 1 }
+let version = { major = 0; minor = 20; patch = 0 }
 
 let opt_new_cli = ref false
 let opt_free_arguments : string list ref = ref []
@@ -65,7 +65,7 @@ let opt_splice : string list ref = ref []
 let opt_print_version = ref false
 let opt_require_version : string option ref = ref None
 let opt_memo_z3 = ref true
-let opt_memo_z3_path = ref "z3_problems"
+let opt_memo_z3_path = ref "sail_smt_cache"
 let opt_have_feature = ref None
 let opt_all_modules = ref false
 let opt_show_sail_dir = ref false
@@ -313,7 +313,10 @@ let rec options =
         " memoize calls to z3, improving performance when typechecking repeatedly (default)"
       );
       ("-no_memo_z3", Arg.Clear opt_memo_z3, " do not memoize calls to z3");
-      ("-memo_z3_path", Arg.String (fun f -> opt_memo_z3_path := f), "path to cache z3 results (default 'z3_problems')");
+      ( "-memo_z3_path",
+        Arg.String (fun f -> opt_memo_z3_path := f),
+        "path to cache z3 results (default 'sail_smt_cache')"
+      );
       ( "-have_feature",
         Arg.String (fun symbol -> opt_have_feature := Some symbol),
         "<symbol> check if a feature symbol is set by default"
@@ -341,9 +344,10 @@ let rec options =
           (fun s ->
             let l = Util.split_on_char ':' s in
             match l with
-            | [fname; line; var] ->
-                Rewrites.opt_mono_split := ((fname, int_of_string line), var) :: !Rewrites.opt_mono_split
-            | _ -> raise (Arg.Bad (s ^ " not of form <filename>:<line>:<variable>"))
+            | [fn; var] -> Rewrites.opt_mono_split := (Arg (Ast_util.mk_id fn), var) :: !Rewrites.opt_mono_split
+            | [filename; line; var] ->
+                Rewrites.opt_mono_split := (Line (filename, int_of_string line), var) :: !Rewrites.opt_mono_split
+            | _ -> raise (Arg.Bad (s ^ " not of form <filename>:<line>:<variable> or <function>:<variable>"))
           ),
         "<filename>:<line>:<variable> manually gives a case split for monomorphisation"
       );
@@ -372,11 +376,28 @@ let rec options =
           ),
         " unroll function in a set of mutually recursive functions"
       );
+      ( "-ddump_project_depgraph",
+        Arg.String (fun file -> Project.opt_ddump_depgraph := Some file),
+        " (debug) dump module dependency graph to a file"
+      );
+      ("-ddump_project_depgraph_reduced", Arg.Set Project.opt_ddump_depgraph_reduced, " (debug) dump reduced depgraph");
+      ( "-ddump_project_depgraph_skip_deps",
+        Arg.Set Project.opt_ddump_depgraph_skip_deps,
+        " (debug) skip dependencies in depgraph"
+      );
+      ( "-ddump_project_depgraph_skip_reqs",
+        Arg.Set Project.opt_ddump_depgraph_skip_reqs,
+        " (debug) skip requires in depgraph"
+      );
       ("-ddump_initial_ast", Arg.Set Frontend.opt_ddump_initial_ast, " (debug) dump the initial ast to stdout");
       ("-ddump_tc_ast", Arg.Set Frontend.opt_ddump_tc_ast, " (debug) dump the typechecked ast to stdout");
       ("-ddump_side_effect", Arg.Set Frontend.opt_ddump_side_effect, " (debug) dump side effect info");
       ("-dtc_verbose", Arg.Int Type_check.set_tc_debug, "<verbosity> (debug) verbose typechecker output: 0 is silent");
       ("-dsmt_verbose", Arg.Set Constraint.opt_smt_verbose, " (debug) print SMTLIB constraints sent to SMT solver");
+      ( "-dcallgraph",
+        Arg.String (fun str -> Callgraph.opt_debug_callgraph := Some str),
+        "<file> (debug) dump callgraph to file"
+      );
       ("-dmagic_hash", Arg.Set Initial_check.opt_magic_hash, " (debug) allow special character # in identifiers");
       ("-dno_error_filenames", Arg.Set Error_format.opt_debug_no_filenames, " (debug) do not print filenames in errors");
       ( "-dprofile",
@@ -578,7 +599,33 @@ let run_sail_format (config : Yojson.Safe.t option) =
       | None -> Format_sail.default_config
   end in
   let module Formatter = Format_sail.Make (Config) in
-  let parsed_files = List.map (fun f -> (f, Initial_check.parse_file f)) !opt_free_arguments in
+  let project_files, files =
+    List.partition (fun free -> Filename.check_suffix free ".sail_project") !opt_free_arguments
+  in
+
+  (* Get all the files references by project files *)
+  let referenced_files =
+    List.map
+      (fun project_file ->
+        let root_directory = Filename.dirname project_file in
+        let contents = file_to_string project_file in
+        let defs = Project.mk_root root_directory :: Initial_check.parse_project ~filename:project_file ~contents () in
+
+        let variables = ref Util.StringMap.empty in
+        List.iter
+          (fun assignment ->
+            if not (Project.parse_assignment ~variables assignment) then
+              raise (Reporting.err_general Parse_ast.Unknown ("Could not parse assignment " ^ assignment))
+          )
+          !opt_variable_assignments;
+        let proj = Project.initialize_project_structure ~variables defs in
+        Project.all_files proj
+      )
+      project_files
+    |> List.concat |> List.map fst
+  in
+
+  let parsed_files = List.map (fun f -> (f, Initial_check.parse_file f)) (files @ referenced_files) in
   List.iter
     (fun (f, (comments, parse_ast)) ->
       let source = file_to_string f in

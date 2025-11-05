@@ -112,10 +112,16 @@ let rec fix_id remove_tick name =
       else name
 
 let doc_id_lem (Id_aux (i, _)) =
-  match i with Id i -> string (fix_id false i) | Operator x -> string (Util.zencode_string ("op " ^ x))
+  match i with
+  | And_bool -> string "and_bool"
+  | Or_bool -> string "or_bool"
+  | Id i -> string (fix_id false i)
+  | Operator x -> string (Util.zencode_string ("op " ^ x))
 
 let doc_id_lem_type (Id_aux (i, _)) =
   match i with
+  | And_bool -> string "and_bool"
+  | Or_bool -> string "or_bool"
   | Id "int" -> string "ii"
   | Id "nat" -> string "ii"
   | Id "option" -> string "maybe"
@@ -124,6 +130,8 @@ let doc_id_lem_type (Id_aux (i, _)) =
 
 let doc_id_lem_ctor (Id_aux (i, _)) =
   match i with
+  | And_bool -> string "and_bool"
+  | Or_bool -> string "or_bool"
   | Id "bit" -> string "bitU"
   | Id "int" -> string "integer"
   | Id "nat" -> string "integer"
@@ -131,8 +139,6 @@ let doc_id_lem_ctor (Id_aux (i, _)) =
   | Id "None" -> string "Nothing"
   | Id i -> string (fix_id false (String.capitalize_ascii i))
   | Operator x -> string (Util.zencode_string ("op " ^ x))
-
-let deinfix = function Id_aux (Id v, l) -> Id_aux (Operator v, l) | Id_aux (Operator v, l) -> Id_aux (Operator v, l)
 
 let doc_var_lem kid = string (fix_id true (string_of_kid kid))
 
@@ -250,7 +256,7 @@ let type_parameters_to_print env defs : Util.IntSet.t Bindings.t =
     match def with
     | DEF_type (TD_aux (TD_record (id, typq, fs, _), _)) ->
         let env = Env.add_typquant Unknown typq env in
-        make_type_size_map env id typq (List.map fst fs) type_size_map
+        make_type_size_map env id typq (List.map (fun ((_, t), _) -> t) fs) type_size_map
     | DEF_type (TD_aux (TD_variant (id, typq, tus, _), _)) ->
         let env = Env.add_typquant Unknown typq env in
         make_type_size_map env id typq (List.map (fun (Tu_aux (Tu_ty_id (t, _), _)) -> t) tus) type_size_map
@@ -505,8 +511,9 @@ let rec doc_lit_lem (L_aux (lit, l)) =
   | L_num i ->
       let ipp = Big_int.to_string i in
       utf8string (if Big_int.less i Big_int.zero then "((0" ^ ipp ^ "):ii)" else "(" ^ ipp ^ ":ii)")
-  | L_hex n when !Monomorphise.opt_mwords -> utf8string ("0x" ^ n)
-  | L_bin n when !Monomorphise.opt_mwords -> utf8string ("0b" ^ n)
+  | L_hex hex when !Monomorphise.opt_mwords ->
+      utf8string ("0x" ^ string_of_hex_lit ~group_separator:"" ~case:Uppercase hex)
+  | L_bin bin when !Monomorphise.opt_mwords -> utf8string ("0b" ^ string_of_bin_lit ~group_separator:"" bin)
   | L_hex _ | L_bin _ ->
       vector_string_to_bit_list (L_aux (lit, l)) |> flow_map (semi ^^ break 0) doc_lit_lem |> group |> align |> brackets
   | L_undef -> utf8string "(return (failwith \"undefined value of unsupported type\"))"
@@ -800,10 +807,10 @@ let doc_exp_lem, doc_let_lem =
     | E_app (f, args) -> begin
         match f with
         | Id_aux (Id "None", _) as none -> doc_id_lem_ctor none
-        | (Id_aux (Id "and_bool", _) | Id_aux (Id "or_bool", _))
-          when effectful (effect_of full_exp) || has_early_return full_exp ->
+        | (Id_aux (And_bool, _) | Id_aux (Or_bool, _)) when effectful (effect_of full_exp) || has_early_return full_exp
+          ->
             let suffix = if effectful (effect_of full_exp) then "M" else "E" in
-            let call = doc_id_lem (append_id f suffix) in
+            let call = string (string_of_id f ^ suffix) in
             wrap_parens (hang 2 (flow (break 1) (call :: List.map expY args)))
         (* temporary hack to make the loop body a function of the temporary variables *)
         | Id_aux (Id "foreach#", _) -> begin
@@ -995,10 +1002,6 @@ let doc_exp_lem, doc_let_lem =
                 liftR (if aexp_needed then parens (align taepp) else taepp)
           end
       end
-    | E_vector_access (v, e) ->
-        raise (Reporting.err_unreachable l __POS__ "E_vector_access should have been rewritten before pretty-printing")
-    | E_vector_subrange (v, e1, e2) ->
-        raise (Reporting.err_unreachable l __POS__ "E_vector_subrange should have been rewritten before pretty-printing")
     | E_field ((E_aux (_, (l, fannot)) as fexp), id) -> (
         match destruct_tannot fannot with
         | (Some (env, Typ_aux (Typ_id tid, _)) | Some (env, Typ_aux (Typ_app (tid, _), _))) when Env.is_record tid env
@@ -1078,10 +1081,6 @@ let doc_exp_lem, doc_let_lem =
           else (epp, aexp_needed)
         in
         if aexp_needed then parens (align epp) else epp
-    | E_vector_update (v, e1, e2) ->
-        raise (Reporting.err_unreachable l __POS__ "E_vector_update should have been rewritten before pretty-printing")
-    | E_vector_update_subrange (v, e1, e2, e3) ->
-        raise (Reporting.err_unreachable l __POS__ "E_vector_update should have been rewritten before pretty-printing")
     | E_list exps -> brackets (separate_map semi expN exps)
     | E_match (e, pexps) ->
         let only_integers e = expY e in
@@ -1107,7 +1106,6 @@ let doc_exp_lem, doc_let_lem =
     | E_throw e -> align (liftR (separate space [string "throw"; expY e]))
     | E_exit e -> liftR (separate space [string "exit"; expY e])
     | E_assert (e1, e2) -> align (liftR (separate space [string "assert_exp"; expY e1; expY e2]))
-    | E_app_infix (e1, id, e2) -> expV aexp_needed (E_aux (E_app (deinfix id, [e1; e2]), (l, annot)))
     | E_var (lexp, eq_exp, in_exp) -> raise (report l __POS__ "E_vars should have been removed before pretty-printing")
     | E_internal_plet (pat, e1, e2) ->
         let bind, bind_unit = if ctxt.monadic then (">>=", ">>") else (">>$=", ">>$") in
@@ -1236,7 +1234,12 @@ let doc_typquant_sorts idpp (TypQ_aux (typq, _)) =
       else empty
   | TypQ_no_forall -> empty
 
-let doc_sia_id (Id_aux (i, _)) = match i with Id i -> string i | Operator x -> string ("operator " ^ x)
+let doc_sia_id (Id_aux (i, _)) =
+  match i with
+  | And_bool -> string "and_bool"
+  | Or_bool -> string "or_bool"
+  | Id i -> string i
+  | Operator x -> string ("operator " ^ x)
 
 let typq_to_print params_to_print id typq =
   match Bindings.find_opt id params_to_print with
@@ -1268,7 +1271,7 @@ let doc_typdef_lem params_to_print env (TD_aux (td, (l, annot))) =
       ^^ hardline ^^ sorts_pp
   | TD_abbrev _ -> empty
   | TD_record (id, typq, fs, _) ->
-      let f_pp (typ, fid) =
+      let f_pp ((fid, typ), _) =
         let field_env = Env.add_typquant (id_loc id) typq env in
         concat [doc_fieldname_lem id fid; space; colon; space; doc_typ_lem params_to_print field_env typ; semi]
       in
@@ -1387,7 +1390,8 @@ let doc_typdef_lem params_to_print env (TD_aux (td, (l, annot))) =
             ^^ hardline
           else empty
     )
-  | TD_enum (id, enums, _) -> (
+  | TD_enum (id, members, _) -> (
+      let enums = List.map fst members in
       match id with
       | Id_aux (Id "regfp", _) -> empty
       | Id_aux (Id "niafp", _) -> empty
@@ -1598,7 +1602,6 @@ let doc_fundef_lem effect_info params_to_print env (FD_aux (FD_function (r, typa
           {
             (pure_exp_alg false ( || )) with
             e_app = (fun (id', args) -> List.fold_left ( || ) (Id.compare id id' = 0) args);
-            e_app_infix = (fun (l, id', r) -> l || Id.compare id id' = 0 || r);
           }
           pexp
       in

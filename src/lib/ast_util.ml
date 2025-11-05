@@ -50,6 +50,9 @@ open Parse_ast.Attribute_data
 open Util
 module Big_int = Nat_big_num
 
+open Coq_def_annot
+open Coq_extern
+
 (* The type of annotations for untyped AST nodes *)
 type uannot = { attrs : (l * string * attribute_data option) list }
 
@@ -85,6 +88,8 @@ let attribute_data_object = function AD_aux (AD_object kvs, _) -> Some kvs | _ -
 
 let attribute_data_bool = function AD_aux (AD_bool b, _) -> Some b | _ -> None
 
+let attribute_data_num = function AD_aux (AD_num n, _) -> Some n | _ -> None
+
 let attribute_data_string = function AD_aux (AD_string s, _) -> Some s | _ -> None
 
 let attribute_data_string_with_loc = function AD_aux (AD_string s, l) -> Some (s, l) | _ -> None
@@ -110,7 +115,7 @@ let find_attribute_opt attr1 attrs =
   List.find_opt (fun (_, attr2, _) -> attr1 = attr2) attrs |> Option.map (fun (l, _, arg) -> (l, arg))
 
 let mk_def_annot ?doc ?(attrs = []) ?(visibility = Public) l env =
-  { doc_comment = doc; attrs; visibility; loc = l; env }
+  { doc_comment = doc; attrs = List.map (fun (x, y, z) -> (x, (y, z))) attrs; visibility; loc = l; env }
 
 let map_clause_annot f (def_annot, annot) =
   let l, annot' = f (def_annot.loc, annot) in
@@ -121,7 +126,8 @@ let is_public = function Public -> true | _ -> false
 
 let visibility_loc = function Private l -> l | Public -> Parse_ast.Unknown
 
-let uannot_of_def_annot (def_annot : 'a def_annot) : uannot = { attrs = def_annot.attrs }
+let uannot_of_def_annot (def_annot : 'a def_annot) : uannot =
+  { attrs = List.map (fun (x, (y, z)) -> (x, y, z)) def_annot.attrs }
 
 let def_annot_map_loc f (annot : 'a def_annot) = { annot with loc = f annot.loc }
 
@@ -134,13 +140,15 @@ let def_annot_map_env (f : 'a -> 'b) (annot : 'a def_annot) =
     env = f annot.env;
   }
 
-let add_def_attribute l attr arg (annot : 'a def_annot) = { annot with attrs = (l, attr, arg) :: annot.attrs }
+let add_def_attribute l attr arg (annot : 'a def_annot) = { annot with attrs = (l, (attr, arg)) :: annot.attrs }
 
 let get_def_attribute attr (annot : 'a def_annot) =
-  List.find_opt (fun (_, attr', _) -> attr = attr') annot.attrs |> Option.map (fun (l, _, arg) -> (l, arg))
+  List.find_opt (fun (_, (attr', _)) -> attr = attr') annot.attrs |> Option.map (fun (l, (_, arg)) -> (l, arg))
+
+let get_def_attributes (annot : 'a def_annot) = List.map (fun (x, (y, z)) -> (x, y, z)) annot.attrs
 
 let remove_def_attribute attr (annot : 'a def_annot) =
-  { annot with attrs = List.filter (fun (_, attr', _) -> attr <> attr') annot.attrs }
+  { annot with attrs = List.filter (fun (_, (attr', _)) -> attr <> attr') annot.attrs }
 
 type mut = Immutable | Mutable
 
@@ -152,7 +160,11 @@ let is_order_inc = function Ord_aux (Ord_inc, _) -> true | Ord_aux (Ord_dec, _) 
 
 let is_order_dec o = not (is_order_inc o)
 
-let string_of_id = function Id_aux (Id v, _) -> v | Id_aux (Operator v, _) -> "(operator " ^ v ^ ")"
+let string_of_id = function
+  | Id_aux (And_bool, _) -> "and_bool"
+  | Id_aux (Or_bool, _) -> "or_bool"
+  | Id_aux (Id v, _) -> v
+  | Id_aux (Operator v, _) -> "(operator " ^ v ^ ")"
 
 let lvar_typ ?loc:(l = Parse_ast.Unknown) = function
   | Local (_, typ) -> typ
@@ -191,7 +203,15 @@ let rec is_gen_loc = function
   | Parse_ast.Hint (_, l1, l2) -> is_gen_loc l1 || is_gen_loc l2
   | Parse_ast.Range _ -> false
 
+let mk_and_bool ?loc:(l = Parse_ast.Unknown) () = Id_aux (And_bool, l)
+let mk_or_bool ?loc:(l = Parse_ast.Unknown) () = Id_aux (Or_bool, l)
+
+let is_and_bool = function Id_aux (And_bool, _) -> true | _ -> false
+
+let is_or_bool = function Id_aux (Or_bool, _) -> true | _ -> false
+
 let mk_id ?loc:(l = Parse_ast.Unknown) str = Id_aux (Id str, l)
+let mk_operator ?loc:(l = Parse_ast.Unknown) str = Id_aux (Operator str, l)
 
 let mk_nc ?loc:(l = Parse_ast.Unknown) nc_aux = NC_aux (nc_aux, l)
 
@@ -204,9 +224,13 @@ let uncast_exp = function
   | E_aux (E_typ (typ, exp), _) -> (exp, Some typ)
   | exp -> (exp, None)
 
+let mk_id_exp ?loc id = match loc with None -> mk_exp ~loc:(id_loc id) (E_id id) | Some l -> mk_exp ~loc:l (E_id id)
+
 let mk_pat ?loc:(l = Parse_ast.Unknown) pat_aux = P_aux (pat_aux, (l, empty_uannot))
 let unaux_pat (P_aux (pat_aux, _)) = pat_aux
 let untyp_pat = function P_aux (P_typ (typ, pat), _) -> (pat, Some typ) | pat -> (pat, None)
+
+let mk_infix_exp ?loc:(l = Parse_ast.Unknown) lhs op rhs = E_aux (E_app (op, [lhs; rhs]), (l, empty_uannot))
 
 let mk_pexp ?loc:(l = Parse_ast.Unknown) pexp_aux = Pat_aux (pexp_aux, (l, empty_uannot))
 
@@ -242,6 +266,17 @@ let mk_letbind ?loc:(l = Parse_ast.Unknown) pat exp = LB_aux (LB_val (pat, exp),
 let mk_val_spec ?loc:(l = Parse_ast.Unknown) vs_aux = DEF_aux (DEF_val (VS_aux (vs_aux, no_annot)), mk_def_annot l ())
 
 let mk_def ?loc:(l = Parse_ast.Unknown) def env = DEF_aux (def, mk_def_annot l env)
+
+let is_vector_syntax (Id_aux (aux, _)) =
+  match aux with
+  | Id "vector_access#" | Id "vector_subrange#" | Id "vector_update#" | Id "vector_update_subrange#" -> true
+  | _ -> false
+
+let vector_access ?(loc = Parse_ast.Unknown) vexp ix = E_app (mk_id ~loc "vector_access#", [vexp; ix])
+let vector_subrange ?(loc = Parse_ast.Unknown) vexp n m = E_app (mk_id ~loc "vector_subrange#", [vexp; n; m])
+let vector_update ?(loc = Parse_ast.Unknown) vexp ix exp = E_app (mk_id ~loc "vector_update#", [vexp; ix; exp])
+let vector_update_subrange ?(loc = Parse_ast.Unknown) vexp n m exp =
+  E_app (mk_id ~loc "vector_update_subrange#", [vexp; n; m; exp])
 
 let rec pat_of_mpat (MP_aux (mpat, annot)) =
   match mpat with
@@ -300,10 +335,16 @@ module Id = struct
   type t = id
   let compare id1 id2 =
     match (id1, id2) with
+    | Id_aux (And_bool, _), Id_aux (And_bool, _) -> 0
+    | Id_aux (Or_bool, _), Id_aux (Or_bool, _) -> 0
     | Id_aux (Id x, _), Id_aux (Id y, _) -> String.compare x y
     | Id_aux (Operator x, _), Id_aux (Operator y, _) -> String.compare x y
-    | Id_aux (Id _, _), Id_aux (Operator _, _) -> -1
-    | Id_aux (Operator _, _), Id_aux (Id _, _) -> 1
+    | Id_aux (Id _, _), _ -> -1
+    | _, Id_aux (Id _, _) -> 1
+    | Id_aux (Operator _, _), _ -> -1
+    | _, Id_aux (Operator _, _) -> 1
+    | Id_aux (And_bool, _), _ -> -1
+    | _, Id_aux (And_bool, _) -> 1
 end
 
 let lex_ord f g x1 x2 y1 y2 = match f x1 x2 with 0 -> g y1 y2 | n -> n
@@ -457,6 +498,14 @@ let unaux_nexp (Nexp_aux (nexp, _)) = nexp
 let unaux_typ (Typ_aux (typ, _)) = typ
 let unaux_kind (K_aux (k, _)) = k
 let unaux_constraint (NC_aux (nc, _)) = nc
+
+let non_empty_singleton = function [] -> [] | x :: xs -> [Non_empty (x, xs)]
+
+let non_empty_for_all p (Non_empty (x, xs)) = p x && List.for_all p xs
+
+let hex_lit_length hex = List.fold_left (fun acc (Non_empty (_, ds)) -> acc + ((List.length ds + 1) * 4)) 0 hex
+
+let bin_lit_length bin = List.fold_left (fun acc (Non_empty (_, ds)) -> acc + List.length ds + 1) 0 bin
 
 let nexp_identical nexp1 nexp2 = Nexp.compare nexp1 nexp2 = 0
 
@@ -871,7 +920,6 @@ and map_exp_annot_aux f = function
   | E_config key -> E_config key
   | E_typ (typ, exp) -> E_typ (typ, map_exp_annot f exp)
   | E_app (id, xs) -> E_app (id, List.map (map_exp_annot f) xs)
-  | E_app_infix (x, op, y) -> E_app_infix (map_exp_annot f x, op, map_exp_annot f y)
   | E_tuple xs -> E_tuple (List.map (map_exp_annot f) xs)
   | E_if (cond, t, e) -> E_if (map_exp_annot f cond, map_exp_annot f t, map_exp_annot f e)
   | E_for (v, e1, e2, e3, o, e4) ->
@@ -879,13 +927,6 @@ and map_exp_annot_aux f = function
   | E_loop (loop_type, measure, e1, e2) ->
       E_loop (loop_type, map_measure_annot f measure, map_exp_annot f e1, map_exp_annot f e2)
   | E_vector exps -> E_vector (List.map (map_exp_annot f) exps)
-  | E_vector_access (exp1, exp2) -> E_vector_access (map_exp_annot f exp1, map_exp_annot f exp2)
-  | E_vector_subrange (exp1, exp2, exp3) ->
-      E_vector_subrange (map_exp_annot f exp1, map_exp_annot f exp2, map_exp_annot f exp3)
-  | E_vector_update (exp1, exp2, exp3) ->
-      E_vector_update (map_exp_annot f exp1, map_exp_annot f exp2, map_exp_annot f exp3)
-  | E_vector_update_subrange (exp1, exp2, exp3, exp4) ->
-      E_vector_update_subrange (map_exp_annot f exp1, map_exp_annot f exp2, map_exp_annot f exp3, map_exp_annot f exp4)
   | E_vector_append (exp1, exp2) -> E_vector_append (map_exp_annot f exp1, map_exp_annot f exp2)
   | E_list xs -> E_list (List.map (map_exp_annot f) xs)
   | E_cons (exp1, exp2) -> E_cons (map_exp_annot f exp1, map_exp_annot f exp2)
@@ -1096,6 +1137,8 @@ type id_chunk = Id_chunk_int of int | Id_chunk_string of string
 let split_id =
   let open Ast in
   function
+  | Id_aux (And_bool, _) -> [Id_chunk_string "and_bool"]
+  | Id_aux (Or_bool, _) -> [Id_chunk_string "or_bool"]
   | Id_aux (Id id, _) ->
       let pos = ref 0 in
       let is_number = ref false in
@@ -1150,25 +1193,31 @@ let natural_sort_ids ids =
   let ids = List.stable_sort (fun (n1, _) (n2, _) -> split_id_compare n1 n2) ids in
   List.map snd ids
 
-let deinfix = function Id_aux (Id v, l) -> Id_aux (Operator v, l) | Id_aux (Operator v, l) -> Id_aux (Operator v, l)
-
-let infix_swap = function Id_aux (Id v, l) -> Id_aux (Operator v, l) | Id_aux (Operator v, l) -> Id_aux (Id v, l)
-
 let id_of_kid = function Kid_aux (Var v, l) -> Id_aux (Id (String.sub v 1 (String.length v - 1)), l)
 
-let kid_of_id = function Id_aux (Id v, l) -> Kid_aux (Var ("'" ^ v), l) | Id_aux (Operator _, _) -> assert false
+let kid_of_id = function Id_aux (Id v, l) -> Kid_aux (Var ("'" ^ v), l) | _ -> assert false
 
 let prepend_id str = function
   | Id_aux (Id v, l) -> Id_aux (Id (str ^ v), l)
   | Id_aux (Operator v, l) -> Id_aux (Operator (str ^ v), l)
+  | Id_aux ((And_bool | Or_bool), l) ->
+      Reporting.unreachable l __POS__
+        "Attempted to construct prepended identifier from short-circuiting boolean operator"
 
 let append_id id str =
-  match id with Id_aux (Id v, l) -> Id_aux (Id (v ^ str), l) | Id_aux (Operator v, l) -> Id_aux (Operator (v ^ str), l)
+  match id with
+  | Id_aux (Id v, l) -> Id_aux (Id (v ^ str), l)
+  | Id_aux (Operator v, l) -> Id_aux (Operator (v ^ str), l)
+  | Id_aux ((And_bool | Or_bool), l) ->
+      Reporting.unreachable l __POS__
+        "Attempted to construct appended identifier from short-circuiting boolean operator"
 
 let remove_id_suffix id str =
   match id with
   | Id_aux (Id v, l) -> remove_suffix v str |> Option.map (fun s -> Id_aux (Id s, l))
   | Id_aux (Operator v, l) -> remove_suffix v str |> Option.map (fun s -> Id_aux (Operator s, l))
+  | Id_aux ((And_bool | Or_bool), l) ->
+      Reporting.unreachable l __POS__ "Attempted to remove suffix from short-circuiting boolean operator"
 
 let prepend_kid str = function
   | Kid_aux (Var v, l) -> Kid_aux (Var ("'" ^ str ^ String.sub v 1 (String.length v - 1)), l)
@@ -1255,6 +1304,41 @@ let string_of_typquant_aux = function
 let string_of_typquant = function TypQ_aux (quant, _) -> string_of_typquant_aux quant
 
 let string_of_typschm (TypSchm_aux (TypSchm_ts (quant, typ), _)) = string_of_typquant quant ^ ". " ^ string_of_typ typ
+
+type digit_case = Lowercase | Uppercase
+
+let string_of_hex_digit ~case digit =
+  let c =
+    match digit with
+    | Hex_0 -> "0"
+    | Hex_1 -> "1"
+    | Hex_2 -> "2"
+    | Hex_3 -> "3"
+    | Hex_4 -> "4"
+    | Hex_5 -> "5"
+    | Hex_6 -> "6"
+    | Hex_7 -> "7"
+    | Hex_8 -> "8"
+    | Hex_9 -> "9"
+    | Hex_A -> "A"
+    | Hex_B -> "B"
+    | Hex_C -> "C"
+    | Hex_D -> "D"
+    | Hex_E -> "E"
+    | Hex_F -> "F"
+  in
+  match case with Uppercase -> c | Lowercase -> String.lowercase_ascii c
+
+let string_of_hex_lit ?(group_separator = "_") ~case hex =
+  List.map (function Non_empty (d, ds) -> List.map (string_of_hex_digit ~case) (d :: ds) |> String.concat "") hex
+  |> String.concat group_separator
+
+let string_of_bin_lit ?(group_separator = "_") bin =
+  List.map
+    (function Non_empty (d, ds) -> List.map (function Bin_0 -> "0" | Bin_1 -> "1") (d :: ds) |> String.concat "")
+    bin
+  |> String.concat group_separator
+
 let string_of_lit (L_aux (lit, _)) =
   match lit with
   | L_unit -> "()"
@@ -1263,8 +1347,8 @@ let string_of_lit (L_aux (lit, _)) =
   | L_true -> "true"
   | L_false -> "false"
   | L_num n -> Big_int.to_string n
-  | L_hex n -> "0x" ^ n
-  | L_bin n -> "0b" ^ n
+  | L_hex hex -> "0x" ^ string_of_hex_lit ~case:Uppercase hex
+  | L_bin bin -> "0b" ^ string_of_bin_lit bin
   | L_undef -> "undefined"
   | L_real r -> r
   | L_string str -> "\"" ^ str ^ "\""
@@ -1282,7 +1366,6 @@ let rec string_of_exp (E_aux (exp, _)) =
   | E_return exp -> "return " ^ string_of_exp exp
   | E_app (f, [E_aux (E_lit (L_aux (L_unit, _)), _)]) -> string_of_id f ^ "()"
   | E_app (f, args) -> string_of_id f ^ "(" ^ string_of_list ", " string_of_exp args ^ ")"
-  | E_app_infix (x, op, y) -> "(" ^ string_of_exp x ^ " " ^ string_of_id op ^ " " ^ string_of_exp y ^ ")"
   | E_tuple exps -> "(" ^ string_of_list ", " string_of_exp exps ^ ")"
   | E_match (exp, cases) -> "match " ^ string_of_exp exp ^ " { " ^ string_of_list ", " string_of_pexp cases ^ " }"
   | E_try (exp, cases) ->
@@ -1291,11 +1374,6 @@ let rec string_of_exp (E_aux (exp, _)) =
   | E_assign (lexp, bind) -> string_of_lexp lexp ^ " = " ^ string_of_exp bind
   | E_typ (typ, exp) -> string_of_exp exp ^ " : " ^ string_of_typ typ
   | E_vector vec -> "[" ^ string_of_list ", " string_of_exp vec ^ "]"
-  | E_vector_access (v, n) -> string_of_exp v ^ "[" ^ string_of_exp n ^ "]"
-  | E_vector_update (v, n, exp) -> "[" ^ string_of_exp v ^ " with " ^ string_of_exp n ^ " = " ^ string_of_exp exp ^ "]"
-  | E_vector_update_subrange (v, n, m, exp) ->
-      "[" ^ string_of_exp v ^ " with " ^ string_of_exp n ^ " .. " ^ string_of_exp m ^ " = " ^ string_of_exp exp ^ "]"
-  | E_vector_subrange (v, n1, n2) -> string_of_exp v ^ "[" ^ string_of_exp n1 ^ " .. " ^ string_of_exp n2 ^ "]"
   | E_vector_append (v1, v2) -> string_of_exp v1 ^ " @ " ^ string_of_exp v2
   | E_if (cond, then_branch, else_branch) ->
       "if " ^ string_of_exp cond ^ " then " ^ string_of_exp then_branch ^ " else " ^ string_of_exp else_branch
@@ -1517,8 +1595,8 @@ let rec get_scattered_union_clauses id = function
   | [] -> []
 
 let rec get_scattered_enum_clauses id = function
-  | DEF_aux (DEF_scattered (SD_aux (SD_enumcl (uid, member), _)), _) :: defs when Id.compare id uid = 0 ->
-      member :: get_scattered_enum_clauses id defs
+  | DEF_aux (DEF_scattered (SD_aux (SD_enumcl (uid, member), _)), def_annot) :: defs when Id.compare id uid = 0 ->
+      (member, def_annot_map_env (fun _ -> ()) def_annot) :: get_scattered_enum_clauses id defs
   | _ :: defs -> get_scattered_enum_clauses id defs
   | [] -> []
 
@@ -1556,8 +1634,8 @@ let rec lexp_to_exp (LE_aux (lexp_aux, annot)) =
         | _ -> raise (Reporting.err_unreachable l __POS__ ("Unsupported sub-lexp " ^ string_of_lexp le ^ " in tuple"))
       in
       rewrap (E_tuple (List.map get_id les))
-  | LE_vector (lexp, e) -> rewrap (E_vector_access (lexp_to_exp lexp, e))
-  | LE_vector_range (lexp, e1, e2) -> rewrap (E_vector_subrange (lexp_to_exp lexp, e1, e2))
+  | LE_vector (lexp, e) -> rewrap (vector_access ~loc:(fst annot) (lexp_to_exp lexp) e)
+  | LE_vector_range (lexp, e1, e2) -> rewrap (vector_subrange ~loc:(fst annot) (lexp_to_exp lexp) e1 e2)
   | LE_field (lexp, id) -> rewrap (E_field (lexp_to_exp lexp, id))
   | LE_app (id, exps) -> rewrap (E_app (id, exps))
   | LE_vector_concat [] -> rewrap (E_vector [])
@@ -1823,7 +1901,6 @@ let rec subst id value (E_aux (e_aux, annot) as exp) =
     | E_config parts -> E_config parts
     | E_typ (typ, exp) -> E_typ (typ, subst id value exp)
     | E_app (fn, exps) -> E_app (fn, List.map (subst id value) exps)
-    | E_app_infix (exp1, op, exp2) -> E_app_infix (subst id value exp1, op, subst id value exp2)
     | E_tuple exps -> E_tuple (List.map (subst id value) exps)
     | E_if (cond, then_exp, else_exp) -> E_if (subst id value cond, subst id value then_exp, subst id value else_exp)
     | E_loop (loop, measure, cond, body) ->
@@ -1832,13 +1909,6 @@ let rec subst id value (E_aux (e_aux, annot) as exp) =
     | E_for (id', exp1, exp2, exp3, order, body) ->
         E_for (id', subst id value exp1, subst id value exp2, subst id value exp3, order, subst id value body)
     | E_vector exps -> E_vector (List.map (subst id value) exps)
-    | E_vector_access (exp1, exp2) -> E_vector_access (subst id value exp1, subst id value exp2)
-    | E_vector_subrange (exp1, exp2, exp3) ->
-        E_vector_subrange (subst id value exp1, subst id value exp2, subst id value exp3)
-    | E_vector_update (exp1, exp2, exp3) ->
-        E_vector_update (subst id value exp1, subst id value exp2, subst id value exp3)
-    | E_vector_update_subrange (exp1, exp2, exp3, exp4) ->
-        E_vector_update_subrange (subst id value exp1, subst id value exp2, subst id value exp3, subst id value exp4)
     | E_vector_append (exp1, exp2) -> E_vector_append (subst id value exp1, subst id value exp2)
     | E_list exps -> E_list (List.map (subst id value) exps)
     | E_cons (exp1, exp2) -> E_cons (subst id value exp1, subst id value exp2)
@@ -1912,40 +1982,13 @@ let explode s =
   exp (String.length s - 1) []
 
 let vector_string_to_bit_list (L_aux (lit, l)) =
-  let hexchar_to_binlist = function
-    | '0' -> ['0'; '0'; '0'; '0']
-    | '1' -> ['0'; '0'; '0'; '1']
-    | '2' -> ['0'; '0'; '1'; '0']
-    | '3' -> ['0'; '0'; '1'; '1']
-    | '4' -> ['0'; '1'; '0'; '0']
-    | '5' -> ['0'; '1'; '0'; '1']
-    | '6' -> ['0'; '1'; '1'; '0']
-    | '7' -> ['0'; '1'; '1'; '1']
-    | '8' -> ['1'; '0'; '0'; '0']
-    | '9' -> ['1'; '0'; '0'; '1']
-    | 'A' -> ['1'; '0'; '1'; '0']
-    | 'B' -> ['1'; '0'; '1'; '1']
-    | 'C' -> ['1'; '1'; '0'; '0']
-    | 'D' -> ['1'; '1'; '0'; '1']
-    | 'E' -> ['1'; '1'; '1'; '0']
-    | 'F' -> ['1'; '1'; '1'; '1']
-    | _ -> raise (Reporting.err_unreachable l __POS__ "hexchar_to_binlist given unrecognized character")
-  in
-
   let s_bin =
     match lit with
-    | L_hex s_hex -> List.flatten (List.map hexchar_to_binlist (explode (String.uppercase_ascii s_hex)))
-    | L_bin s_bin -> explode s_bin
+    | L_hex hex -> Semantics.bitlist_of_hex_lit hex
+    | L_bin bin -> Semantics.bitlist_of_bin_lit bin
     | _ -> raise (Reporting.err_unreachable l __POS__ "s_bin given non vector literal")
   in
-
-  List.map
-    (function
-      | '0' -> L_aux (L_zero, gen_loc l)
-      | '1' -> L_aux (L_one, gen_loc l)
-      | _ -> raise (Reporting.err_unreachable (gen_loc l) __POS__ "binary had non-zero or one")
-      )
-    s_bin
+  List.map (function Value_type.B0 -> L_aux (L_zero, gen_loc l) | Value_type.B1 -> L_aux (L_one, gen_loc l)) s_bin
 
 (* Functions for working with locations *)
 
@@ -2063,18 +2106,12 @@ let rec locate : 'a. (l -> l) -> 'a exp -> 'a exp =
     | E_config parts -> E_config parts
     | E_typ (typ, exp) -> E_typ (locate_typ f typ, locate f exp)
     | E_app (id, exps) -> E_app (locate_id f id, List.map (locate f) exps)
-    | E_app_infix (exp1, op, exp2) -> E_app_infix (locate f exp1, locate_id f op, locate f exp2)
     | E_tuple exps -> E_tuple (List.map (locate f) exps)
     | E_if (cond_exp, then_exp, else_exp) -> E_if (locate f cond_exp, locate f then_exp, locate f else_exp)
     | E_loop (loop, measure, cond, body) -> E_loop (loop, locate_measure f measure, locate f cond, locate f body)
     | E_for (id, exp1, exp2, exp3, ord, exp4) ->
         E_for (locate_id f id, locate f exp1, locate f exp2, locate f exp3, ord, locate f exp4)
     | E_vector exps -> E_vector (List.map (locate f) exps)
-    | E_vector_access (exp1, exp2) -> E_vector_access (locate f exp1, locate f exp2)
-    | E_vector_subrange (exp1, exp2, exp3) -> E_vector_subrange (locate f exp1, locate f exp2, locate f exp3)
-    | E_vector_update (exp1, exp2, exp3) -> E_vector_update (locate f exp1, locate f exp2, locate f exp3)
-    | E_vector_update_subrange (exp1, exp2, exp3, exp4) ->
-        E_vector_update_subrange (locate f exp1, locate f exp2, locate f exp3, locate f exp4)
     | E_vector_append (exp1, exp2) -> E_vector_append (locate f exp1, locate f exp2)
     | E_list exps -> E_list (List.map (locate f) exps)
     | E_cons (exp1, exp2) -> E_cons (locate f exp1, locate f exp2)

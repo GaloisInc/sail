@@ -244,6 +244,10 @@ let row_matrix_width l (Rows rows) =
 
 let row_matrix_height (Rows rows) = List.length rows
 
+let filter_out (is : IntSet.t) l =
+  let rec aux (i, acc) elt = if IntSet.mem i is then (i + 1, acc) else (i + 1, elt :: acc) in
+  List.fold_left aux (0, []) l |> snd |> List.rev
+
 module Make (C : Config) = struct
   type bv_constraint =
     | BVC_eq of bv_constraint * bv_constraint
@@ -354,8 +358,14 @@ module Make (C : Config) = struct
         (* Unit pattern always matches on unit, so generalize to wildcard *)
         GP_wild
     | P_lit (L_aux (L_hex hex, _)) ->
-        GP_bitvector (pnum, String.length hex * 4, fun x -> BVC_eq (x, BVC_lit ("#x" ^ hex)))
-    | P_lit (L_aux (L_bin bin, _)) -> GP_bitvector (pnum, String.length bin, fun x -> BVC_eq (x, BVC_lit ("#b" ^ bin)))
+        GP_bitvector
+          ( pnum,
+            hex_lit_length hex,
+            fun x -> BVC_eq (x, BVC_lit ("#x" ^ string_of_hex_lit ~group_separator:"" ~case:Uppercase hex))
+          )
+    | P_lit (L_aux (L_bin bin, _)) ->
+        GP_bitvector
+          (pnum, bin_lit_length bin, fun x -> BVC_eq (x, BVC_lit ("#b" ^ string_of_bin_lit ~group_separator:"" bin)))
     | P_vector pats when is_bitvector_typ typ ->
         let mask, bits =
           List.fold_left
@@ -860,7 +870,11 @@ module Make (C : Config) = struct
             let wild_matrix = split_matrix_wild i matrix in
             begin
               match unmatched_literal col with
-              | None -> Completeness_unknown
+              | None -> begin
+                  match matrix_is_complete l ctx wild_matrix with
+                  | Complete cinfo -> Complete cinfo
+                  | Incomplete _ | Completeness_unknown -> Completeness_unknown
+                end
               | Some lit ->
                   if row_matrix_empty wild_matrix then
                     Incomplete (undefs_except 0 i (mk_lit_exp lit) (row_matrix_width l matrix))
@@ -947,7 +961,12 @@ module Make (C : Config) = struct
                       |> completeness_map (reenum (mk_counterexample member) i) (union_complete cinfo)
               )
               (mk_complete [] []) members
-        | Unknown_column -> Completeness_unknown
+        | Unknown_column -> (
+            match matrix_is_complete l ctx (split_matrix_wild i matrix) with
+            | Incomplete unmatcheds -> Completeness_unknown
+            | Complete cinfo -> Complete cinfo
+            | Completeness_unknown -> Completeness_unknown
+          )
       end
 
   (* Just highlight the match keyword and not the whole match block. *)
@@ -976,7 +995,7 @@ module Make (C : Config) = struct
     | _, (Pat_aux (Pat_when _, _) as case) :: cases -> case :: update_cases l new_pats cases
     | _, _ -> Reporting.unreachable l __POS__ "Impossible case in update_cases" [@coverage off]
 
-  let is_complete_wildcarded ?(keyword = "match") l ctx cases head_exp_typ =
+  let is_complete_wildcarded ?(keyword = "match") ?(remove_redundant = false) l ctx cases head_exp_typ =
     try
       match cases_to_pats ctx 0 ~have_guard:false ~have_mapping:false cases with
       | _, _, [] -> None
@@ -1012,7 +1031,8 @@ module Make (C : Config) = struct
                       Reporting.warn "Redundant case" idx.loc "This match case is never used"
                   )
                   (rows_to_list matrix);
-                Some (update_cases l wildcarded_pats cases)
+                let result = update_cases l wildcarded_pats cases in
+                if remove_redundant then Some (filter_out cinfo.redundant result) else Some result
             | Completeness_unknown -> None
           end
     with
@@ -1020,7 +1040,7 @@ module Make (C : Config) = struct
     | _ ->
       None
 
-  let is_complete_funcls_wildcarded ?(keyword = "match") l ctx funcls head_exp_typ =
+  let is_complete_funcls_wildcarded ?(keyword = "match") ?(remove_redundant = false) l ctx funcls head_exp_typ =
     let destruct_funcl (FCL_aux (FCL_funcl (id, pexp), annot)) = ((id, annot), pexp) in
     let cases = List.map destruct_funcl funcls in
     match is_complete_wildcarded ~keyword l ctx (List.map snd cases) head_exp_typ with

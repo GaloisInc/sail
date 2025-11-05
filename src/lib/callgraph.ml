@@ -49,6 +49,8 @@ open Ast_defs
 open Ast_util
 open Rewriter
 
+let opt_debug_callgraph = ref None
+
 type node =
   | Register of id
   | Function of id
@@ -84,6 +86,18 @@ let node_kind = function
   | FunctionMeasure _ -> 7
   | LoopMeasures _ -> 8
   | Outcome _ -> 9
+
+let node_color = function
+  | Register _ -> "firebrick1"
+  | Function _ -> "gray90"
+  | Mapping _ -> "beige"
+  | Letbind _ -> "darkorchid1"
+  | Type _ -> "aquamarine"
+  | Overload _ -> "coral"
+  | Constructor _ -> "chartreuse"
+  | FunctionMeasure _ -> "darkseagreen"
+  | LoopMeasures _ -> "peachpuff"
+  | Outcome _ -> "olive"
 
 module Node = struct
   type t = node
@@ -128,7 +142,7 @@ and typ_ids' (Typ_aux (aux, _)) =
   | Typ_fn (typs, typ) -> IdSet.union (typ_ids' typ) (List.fold_left IdSet.union IdSet.empty (List.map typ_ids' typs))
   | Typ_bidir (typ1, typ2) -> IdSet.union (typ_ids' typ1) (typ_ids' typ2)
   | Typ_tuple typs -> List.fold_left IdSet.union IdSet.empty (List.map typ_ids' typs)
-  | Typ_exist (_, _, typ) -> typ_ids' typ
+  | Typ_exist (_, nc, typ) -> IdSet.union (constraint_ids' nc) (typ_ids' typ)
 
 and typ_arg_ids' (A_aux (aux, _)) =
   match aux with A_typ typ -> typ_ids' typ | A_nexp nexp -> nexp_ids' nexp | A_bool nc -> constraint_ids' nc
@@ -221,7 +235,7 @@ let add_def_to_graph graph (DEF_aux (def, def_annot)) =
             let funcalls_of_exp =
               let e_app (id, args) =
                 let arg_funcalls = List.fold_left IdSet.union IdSet.empty args in
-                if Bindings.mem id (Env.get_val_specs env) then IdSet.add id arg_funcalls else arg_funcalls
+                if Env.has_val_spec id env then IdSet.add id arg_funcalls else arg_funcalls
               in
               fold_exp { (pure_exp_alg IdSet.empty IdSet.union) with e_app }
             in
@@ -273,7 +287,7 @@ let add_def_to_graph graph (DEF_aux (def, def_annot)) =
         scan_typquant (Type id) typq
     | TD_record (id, typq, fields, _) ->
         let field_nodes =
-          List.map (fun (typ, _) -> typ_ids typ) fields
+          List.map (fun ((_, typ), _) -> typ_ids typ) fields
           |> List.fold_left IdSet.union IdSet.empty |> IdSet.elements
           |> List.map (fun id -> Type id)
         in
@@ -289,8 +303,8 @@ let add_def_to_graph graph (DEF_aux (def, def_annot)) =
         IdSet.iter (fun ctor_id -> graph := G.add_edge (Constructor ctor_id) (Type id) !graph) (snd ctor_nodes);
         IdSet.iter (fun typ_id -> graph := G.add_edge (Type id) (Type typ_id) !graph) (fst ctor_nodes);
         scan_typquant (Type id) typq
-    | TD_enum (id, ctors, _) ->
-        List.iter (fun ctor_id -> graph := G.add_edge (Constructor ctor_id) (Type id) !graph) ctors
+    | TD_enum (id, members, _) ->
+        List.iter (fun (member_id, _) -> graph := G.add_edge (Constructor member_id) (Type id) !graph) members
     | TD_abstract (id, _, _) -> graph := G.add_edges (Type id) [] !graph
     | TD_bitfield (id, typ, ranges) ->
         graph := G.add_edges (Type id) (List.map (fun id -> Type id) (IdSet.elements (typ_ids typ))) !graph
@@ -547,6 +561,16 @@ let top_sort_defs ast =
   in
   (* Build callgraph, and collect definitions per node, so that we can efficiently reorder later *)
   let g = graph_of_ast ast in
+  ( match !opt_debug_callgraph with
+  | Some out ->
+      let chan = open_out out in
+      G.make_dot ~node_color
+        ~edge_color:(fun _ _ -> "black")
+        ~string_of_node:(fun id -> string_of_id (node_id id))
+        chan g;
+      close_out chan
+  | None -> ()
+  );
   let defs_of_nodes =
     let add defs d =
       let update_node defs n = NM.update n (function Some ds -> Some (d :: ds) | None -> Some [d]) defs in
@@ -655,7 +679,7 @@ let slice_instantiation_types sail_dir ast =
   let ast = filter_ast_extra NodeSet.empty g ast false in
   filter_library_files sail_dir ast
 
-let partition_instantiation_definitions defs =
+let partition_instantiation_definitions include_types defs =
   let module NodeMap = Map.Make (Node) in
   let module G = Graph.Make (Node) in
   let g = graph_of_defs defs in
@@ -664,16 +688,24 @@ let partition_instantiation_definitions defs =
     |> List.filter_map (function
          | DEF_aux (DEF_instantiation (_, substs), _) ->
              Some
-               (List.filter_map
-                  (function IS_aux (IS_typ _, _) -> None | IS_aux (IS_id (_, id_to), _) -> Some (Function id_to))
+               (List.map
+                  (function
+                    | IS_aux (IS_typ (_, arg), _) ->
+                        if include_types then typ_arg_ids arg |> IdSet.elements |> List.map (fun id -> Type id) else []
+                    | IS_aux (IS_id (_, id_to), _) -> [Function id_to]
+                    )
                   substs
+               |> List.concat
                )
          | _ -> None
          )
     |> List.concat |> NS.of_list
   in
   let g = G.prune roots NS.empty g in
-  List.partition (fun def -> NS.exists (fun n -> NodeMap.mem n g) (nodes_of_def def)) defs
+  let not_type = function DEF_aux (DEF_type _, _) -> false | _ -> true in
+  List.partition
+    (fun def -> (include_types || not_type def) && NS.exists (fun n -> NodeMap.mem n g) (nodes_of_def def))
+    defs
 
 module FCG = Graph.Make (Id)
 
@@ -681,13 +713,7 @@ let function_call_graph ast =
   let module G = Graph.Make (Id) in
   let scan_funcl graph (FCL_aux (FCL_funcl (id, pexp), _)) =
     let callees =
-      fold_pexp
-        {
-          (pure_exp_alg [] ( @ )) with
-          e_app = (fun (id', args) -> id' :: List.concat args);
-          e_app_infix = (fun (arg1, id', arg2) -> (id' :: arg1) @ arg2);
-        }
-        pexp
+      fold_pexp { (pure_exp_alg [] ( @ )) with e_app = (fun (id', args) -> id' :: List.concat args) } pexp
     in
     FCG.add_edges id callees graph
   in

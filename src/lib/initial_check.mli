@@ -80,7 +80,7 @@ val get_uninitialized_registers : untyped_def list -> (id * typ) list
 
 val generate_undefined_record_context : typquant -> (id * typ) list
 
-val generate_undefined_record : id -> typquant -> (typ * id) list -> untyped_def list
+val generate_undefined_record : id -> typquant -> ((id * typ) * unit def_annot) list -> untyped_def list
 
 val generate_undefined_enum : id -> id list -> untyped_def list
 
@@ -98,7 +98,15 @@ val generate : untyped_ast -> untyped_ast
 
 val process_ast : ctx -> Parse_ast.defs -> untyped_ast * ctx
 
+(** {2 Constructing notation attributes} *)
+val notation_attr : Parse_ast.l -> int -> string list -> uannot -> uannot
+
 (** {2 Parsing expressions and definitions from strings} *)
+
+val hex_digit_of_char : char -> (hex_digit * digit_case option) option
+
+val parse_hex_lit : ?warn_inconsistent_case:Parse_ast.l -> string -> hex_digit non_empty list option
+val parse_bin_lit : string -> bin_digit non_empty list option
 
 val extern_of_string : ?pure:bool -> id -> string -> untyped_def
 
