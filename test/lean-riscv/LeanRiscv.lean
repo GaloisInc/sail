@@ -1,4 +1,4 @@
-import Std.Data.HashMap.Basic
+import Std.Data.ExtHashMap.Basic
 
 import ELFSage
 import LeanRV64DExecutable
@@ -28,7 +28,7 @@ inductive MachineBits where
 
 def DEFAULT_RSTVEC := 0x00001000
 
-def initializeMemory (_size: MachineBits) (elf : ELF64File) : Std.HashMap Nat (BitVec 8) :=
+def initializeMemory (_size: MachineBits) (elf : ELF64File) : Std.ExtHashMap Nat (BitVec 8) :=
   -- From: sail-riscv/c_emulator/riscv_sim.cpp
   --
   -- let RST_VEC_SIZE : UInt32 := 8
