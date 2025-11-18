@@ -96,6 +96,7 @@ def initializeRegisters (elf: ELF64File) :=
   | some tohost_addr => do
     writeReg PC (elf.file_header.e_entry:UInt64).toBitVec
     writeReg htif_tohost (tohost_addr:UInt64).toBitVec
+    enable_htif (tohost_addr:UInt64).toBitVec
 
 def my_main (elf: ELF64File) :=
   open LeanRV64DExecutable.Functions in
