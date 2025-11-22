@@ -406,7 +406,7 @@ open Sail
 
 section Regs
 
-variable {Register : Type} {RegisterType : Register → Type} [DecidableEq Register] [Hashable Register]
+variable {Register : Type} {RegisterType : Register → Type} [DecidableEq Register] [Hashable Register] [Repr Register]
 
 structure SequentialState (RegisterType : Register → Type) (c : ChoiceSource) where
   regs : Std.ExtDHashMap Register RegisterType
@@ -708,4 +708,3 @@ macro_rules | `(tactic| decreasing_trivial) => `(tactic|
 -- termination.
 @[wf_preprocess]
 theorem cond_eq_ite (b : Bool) (x y : α) : cond b x y = ite b x y := by cases b <;> rfl
-
