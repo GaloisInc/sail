@@ -351,7 +351,7 @@ let create_lake_project (ctx : lean_context) executable =
   (* Change the base directory if the option '--lean-output-dir' is set *)
   output_string ctx.lakefile
     ("name = \"" ^ ctx.out_name ^ "\"\ndefaultTargets = [\"" ^ ctx.out_name_camel
-   ^ "\"]\nmoreLeanArgs = [\"--tstack=400000\"]\nmoreLeancArgs = [\"-fbracket-depth=512\"]\n\n[[lean_lib]]\nname = \"" ^ ctx.out_name_camel ^ "\""
+   ^ "\"]\nmoreLeanArgs = [\"--tstack=400000\"]\n\n[[lean_lib]]\nname = \"" ^ ctx.out_name_camel ^ "\""
     );
   output_string ctx.lakefile "\nleanOptions.weak.linter.style.nameCheck = false";
   if !opt_lean_real_numbers then (
