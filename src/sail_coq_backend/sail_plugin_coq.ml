@@ -135,7 +135,6 @@ let coq_rewrites =
     ("mapping_patterns", []);
     ("add_unspecified_rec", []);
     ("undefined", [Bool_arg true]);
-    ("vector_string_pats_to_bit_list", []);
     ("remove_not_pats", []);
     ("remove_impossible_int_cases", []);
     ("tuple_assignments", []);
@@ -145,6 +144,7 @@ let coq_rewrites =
     ("remove_bitvector_pats", []);
     ("remove_numeral_pats", []);
     ("pattern_literals", [Literal_arg "lem"]);
+    ("recheck_defs", []);
     ("guarded_pats", []);
     (* ("register_ref_writes", rewrite_register_ref_writes); *)
     ("nexp_ids", []);

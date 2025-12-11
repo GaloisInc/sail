@@ -9,6 +9,9 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
+
+abbrev bit := (BitVec 1)
 
 abbrev bits k_n := (BitVec k_n)
 
@@ -17,9 +20,11 @@ inductive option (k_a : Type) where
   | Some (_ : k_a)
   | None (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open option
 
 inductive word_width where | BYTE | HALF | WORD | DOUBLE
   deriving BEq, Inhabited, Repr
+  open word_width
 
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
@@ -27,6 +32,7 @@ abbrev RegisterType : Register -> Type := PEmpty.elim
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception
+abbrev SailME := PreSailME RegisterType trivialChoiceSource exception
 
 
 XXXXXXXXX
@@ -44,13 +50,14 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 namespace Out.Functions
 
 open word_width
 open option
 
-/-- Type quantifiers: k_ex921_ : Bool, k_ex920_ : Bool -/
+/-- Type quantifiers: k_ex1029_ : Bool, k_ex1028_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -98,7 +105,7 @@ def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
   if ((l ≥b n) : Bool)
   then ((sail_ones n) <<< i)
   else
-    (let one : (BitVec n) := (sail_mask n (0b1 : (BitVec 1)))
+    (let one : (BitVec n) := (sail_mask n (1#1 : (BitVec 1)))
     (((one <<< l) - one) <<< i))
 
 /-- Type quantifiers: n : Nat, n > 0 -/
@@ -163,16 +170,16 @@ def num_of_word_width (arg_ : word_width) : Int :=
 
 def size_bits_forwards (arg_ : word_width) : (BitVec 2) :=
   match arg_ with
-  | BYTE => (0b00 : (BitVec 2))
-  | HALF => (0b01 : (BitVec 2))
-  | WORD => (0b10 : (BitVec 2))
-  | DOUBLE => (0b11 : (BitVec 2))
+  | BYTE => 0b00#2
+  | HALF => 0b01#2
+  | WORD => 0b10#2
+  | DOUBLE => 0b11#2
 
 def size_bits_backwards (arg_ : (BitVec 2)) : word_width :=
-  match_bv arg_ with
-  | 00 => BYTE
-  | 01 => HALF
-  | 10 => WORD
+  match arg_ with
+  | 0b00 => BYTE
+  | 0b01 => HALF
+  | 0b10 => WORD
   | _ => DOUBLE
 
 def size_bits_forwards_matches (arg_ : word_width) : Bool :=
@@ -184,25 +191,25 @@ def size_bits_forwards_matches (arg_ : word_width) : Bool :=
   | _ => false
 
 def size_bits_backwards_matches (arg_ : (BitVec 2)) : Bool :=
-  match_bv arg_ with
-  | 00 => true
-  | 01 => true
-  | 10 => true
-  | 11 => true
+  match arg_ with
+  | 0b00 => true
+  | 0b01 => true
+  | 0b10 => true
+  | 0b11 => true
   | _ => false
 
 def size_bits2_forwards (arg_ : word_width) : (BitVec 2) :=
   match arg_ with
-  | BYTE => (0b00 : (BitVec 2))
-  | HALF => (0b01 : (BitVec 2))
-  | WORD => (0b10 : (BitVec 2))
-  | DOUBLE => (0b11 : (BitVec 2))
+  | BYTE => 0b00#2
+  | HALF => 0b01#2
+  | WORD => 0b10#2
+  | DOUBLE => 0b11#2
 
 def size_bits2_backwards (arg_ : (BitVec 2)) : word_width :=
-  match_bv arg_ with
-  | 00 => BYTE
-  | 01 => HALF
-  | 10 => WORD
+  match arg_ with
+  | 0b00 => BYTE
+  | 0b01 => HALF
+  | 0b10 => WORD
   | _ => DOUBLE
 
 def size_bits2_forwards_matches (arg_ : word_width) : Bool :=
@@ -214,25 +221,25 @@ def size_bits2_forwards_matches (arg_ : word_width) : Bool :=
   | _ => false
 
 def size_bits2_backwards_matches (arg_ : (BitVec 2)) : Bool :=
-  match_bv arg_ with
-  | 00 => true
-  | 01 => true
-  | 10 => true
-  | 11 => true
+  match arg_ with
+  | 0b00 => true
+  | 0b01 => true
+  | 0b10 => true
+  | 0b11 => true
   | _ => false
 
 def size_bits3_forwards (arg_ : word_width) : (BitVec 2) :=
   match arg_ with
-  | BYTE => (0b00 : (BitVec 2))
-  | HALF => (0b01 : (BitVec 2))
-  | WORD => (0b10 : (BitVec 2))
-  | DOUBLE => (0b11 : (BitVec 2))
+  | BYTE => 0b00#2
+  | HALF => 0b01#2
+  | WORD => 0b10#2
+  | DOUBLE => 0b11#2
 
 def size_bits3_backwards (arg_ : (BitVec 2)) : word_width :=
-  match_bv arg_ with
-  | 00 => BYTE
-  | 01 => HALF
-  | 10 => WORD
+  match arg_ with
+  | 0b00 => BYTE
+  | 0b01 => HALF
+  | 0b10 => WORD
   | _ => DOUBLE
 
 def size_bits3_forwards_matches (arg_ : word_width) : Bool :=
@@ -244,24 +251,24 @@ def size_bits3_forwards_matches (arg_ : word_width) : Bool :=
   | _ => false
 
 def size_bits3_backwards_matches (arg_ : (BitVec 2)) : Bool :=
-  match_bv arg_ with
-  | 00 => true
-  | 01 => true
-  | 10 => true
-  | 11 => true
+  match arg_ with
+  | 0b00 => true
+  | 0b01 => true
+  | 0b10 => true
+  | 0b11 => true
   | _ => false
 
 def ta_flag_forwards (arg_ : String) : SailM (BitVec 1) := do
   match arg_ with
-  | "ta" => (pure (0b1 : (BitVec 1)))
-  | "tu" => (pure (0b0 : (BitVec 1)))
+  | "ta" => (pure 1#1)
+  | "tu" => (pure 0#1)
   | _ =>
     (do
       assert false "Pattern match failure at unknown location"
       throw Error.Exit)
 
 def ta_flag_backwards (arg_ : (BitVec 1)) : String :=
-  match_bv arg_ with
+  match arg_ with
   | 1 => "ta"
   | _ => "tu"
 
@@ -272,14 +279,14 @@ def ta_flag_forwards_matches (arg_ : String) : Bool :=
   | _ => false
 
 def ta_flag_backwards_matches (arg_ : (BitVec 1)) : Bool :=
-  match_bv arg_ with
+  match arg_ with
   | 1 => true
   | 0 => true
   | _ => false
 
 /-- Type quantifiers: k_n : Nat, k_n > 0 -/
 def hex_bits_forwards (bv : (BitVec k_n)) : (Nat × String) :=
-  ((Sail.BitVec.length bv), (Int.toHex (BitVec.toNat bv)))
+  ((Sail.BitVec.length bv), (Int.toHex (BitVec.toNatInt bv)))
 
 /-- Type quantifiers: k_n : Nat, k_n > 0 -/
 def hex_bits_forwards_matches (bv : (BitVec k_n)) : Bool :=

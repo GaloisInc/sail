@@ -631,7 +631,6 @@ let rec doc_typ_fns ctx env =
     | Typ_id (Id_aux (Id "nat", _)) -> string "Z"
     | Typ_id (Id_aux (Id "string_literal", _)) -> string "string"
     | Typ_id (Id_aux (Id "bool", _)) -> string "bool"
-    | Typ_id (Id_aux (Id "bit", _)) -> string "bitU"
     | Typ_id id ->
         (*if List.exists ((=) (string_of_id id)) regtypes
           then string "register"
@@ -837,8 +836,6 @@ let coq_escape_string s = Str.global_replace (Str.regexp "\"") "\"\"" s
 let doc_lit (L_aux (lit, l)) =
   match lit with
   | L_unit -> utf8string "tt"
-  | L_zero -> utf8string "B0"
-  | L_one -> utf8string "B1"
   | L_false -> utf8string "false"
   | L_true -> utf8string "true"
   | L_num i ->
@@ -2550,7 +2547,6 @@ let countable_types defs =
            "nat";
            "int";
            "unit";
-           "bit";
            "string";
            "string_literal";
            "list";

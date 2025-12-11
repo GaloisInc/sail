@@ -109,7 +109,6 @@ let lem_rewrites =
     ("add_bitvector_casts", [If_mwords_arg]);
     ("atoms_to_singletons", [String_arg "lem"; If_mono_arg]);
     ("recheck_defs", [If_mwords_arg]);
-    ("vector_string_pats_to_bit_list", []);
     ("remove_not_pats", []);
     ("remove_impossible_int_cases", []);
     ("tuple_assignments", []);
@@ -119,6 +118,7 @@ let lem_rewrites =
     ("remove_bitvector_pats", []);
     ("remove_numeral_pats", []);
     ("pattern_literals", [Literal_arg "lem"]);
+    ("recheck_defs", []);
     ("guarded_pats", []);
     (* ("register_ref_writes", rewrite_register_ref_writes); *)
     ("nexp_ids", []);
@@ -130,7 +130,6 @@ let lem_rewrites =
     ("prover_regstate", [Flag_arg Monomorphise.opt_mwords]);
     ("top_sort_defs", []);
     ("const_prop_mutrec", [String_arg "lem"]);
-    ("vector_string_pats_to_bit_list", []);
     ("exp_lift_assign", []);
     ("early_return", []);
     (* early_return currently breaks the types *)

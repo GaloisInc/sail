@@ -9,6 +9,7 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 structure rectangle where
   width : Int
@@ -23,12 +24,14 @@ inductive shape where
   | Rectangle (_ : rectangle)
   | Circle (_ : circle)
   deriving Inhabited, BEq, Repr
+  open shape
 
 /-- Type quantifiers: k_a : Type -/
 inductive my_option (k_a : Type) where
   | MySome (_ : k_a)
   | MyNone (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open my_option
 
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
@@ -36,6 +39,7 @@ abbrev RegisterType : Register -> Type := PEmpty.elim
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception
+abbrev SailME := PreSailME RegisterType trivialChoiceSource exception
 
 
 XXXXXXXXX
@@ -53,6 +57,7 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 namespace Out.Functions
 
@@ -60,11 +65,11 @@ open shape
 open my_option
 
 def undefined_rectangle (_ : Unit) : SailM rectangle := do
-  (pure { width := (← (undefined_int ()))
-          height := (← (undefined_int ())) })
+  (pure { width := ← (undefined_int ())
+          height := ← (undefined_int ()) })
 
 def undefined_circle (_ : Unit) : SailM circle := do
-  (pure { radius := (← (undefined_int ())) })
+  (pure { radius := ← (undefined_int ()) })
 
 /-- Type quantifiers: k_a : Type -/
 def is_none (opt : (my_option k_a)) : Bool :=

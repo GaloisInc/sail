@@ -9,6 +9,9 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
+
+abbrev bit := (BitVec 1)
 
 abbrev bits k_n := (BitVec k_n)
 
@@ -17,6 +20,7 @@ inductive option (k_a : Type) where
   | Some (_ : k_a)
   | None (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open option
 
 abbrev MAIRType := (BitVec 64)
 
@@ -26,6 +30,7 @@ abbrev S2PIRType := (BitVec 64)
 
 inductive SecurityState where | SS_NonSecure | SS_Root | SS_Realm | SS_Secure
   deriving BEq, Inhabited, Repr
+  open SecurityState
 
 abbrev PARTIDtype := (BitVec 16)
 
@@ -33,6 +38,7 @@ abbrev PMGtype := (BitVec 8)
 
 inductive PARTIDspaceType where | PIdSpace_Secure | PIdSpace_Root | PIdSpace_Realm | PIdSpace_NonSecure
   deriving BEq, Inhabited, Repr
+  open PARTIDspaceType
 
 structure MPAMinfo where
   mpam_sp : PARTIDspaceType
@@ -42,24 +48,31 @@ structure MPAMinfo where
 
 inductive AccessType where | AccessType_IFETCH | AccessType_GPR | AccessType_ASIMD | AccessType_SVE | AccessType_SME | AccessType_IC | AccessType_DC | AccessType_DCZero | AccessType_AT | AccessType_NV2 | AccessType_SPE | AccessType_GCS | AccessType_GPTW | AccessType_TTW
   deriving BEq, Inhabited, Repr
+  open AccessType
 
 inductive VARange where | VARange_LOWER | VARange_UPPER
   deriving BEq, Inhabited, Repr
+  open VARange
 
 inductive MemAtomicOp where | MemAtomicOp_GCSSS1 | MemAtomicOp_ADD | MemAtomicOp_BIC | MemAtomicOp_EOR | MemAtomicOp_ORR | MemAtomicOp_SMAX | MemAtomicOp_SMIN | MemAtomicOp_UMAX | MemAtomicOp_UMIN | MemAtomicOp_SWP | MemAtomicOp_CAS
   deriving BEq, Inhabited, Repr
+  open MemAtomicOp
 
 inductive CacheOp where | CacheOp_Clean | CacheOp_Invalidate | CacheOp_CleanInvalidate
   deriving BEq, Inhabited, Repr
+  open CacheOp
 
 inductive CacheOpScope where | CacheOpScope_SetWay | CacheOpScope_PoU | CacheOpScope_PoC | CacheOpScope_PoE | CacheOpScope_PoP | CacheOpScope_PoDP | CacheOpScope_PoPA | CacheOpScope_ALLU | CacheOpScope_ALLUIS
   deriving BEq, Inhabited, Repr
+  open CacheOpScope
 
 inductive CacheType where | CacheType_Data | CacheType_Tag | CacheType_Data_Tag | CacheType_Instruction
   deriving BEq, Inhabited, Repr
+  open CacheType
 
 inductive CachePASpace where | CPAS_NonSecure | CPAS_Any | CPAS_RealmNonSecure | CPAS_Realm | CPAS_Root | CPAS_SecureNonSecure | CPAS_Secure
   deriving BEq, Inhabited, Repr
+  open CachePASpace
 
 structure AccessDescriptor where
   acctype : AccessType
@@ -99,9 +112,11 @@ structure AccessDescriptor where
 
 inductive MemType where | MemType_Normal | MemType_Device
   deriving BEq, Inhabited, Repr
+  open MemType
 
 inductive DeviceType where | DeviceType_GRE | DeviceType_nGRE | DeviceType_nGnRE | DeviceType_nGnRnE
   deriving BEq, Inhabited, Repr
+  open DeviceType
 
 structure MemAttrHints where
   attrs : (BitVec 2)
@@ -111,9 +126,11 @@ structure MemAttrHints where
 
 inductive Shareability where | Shareability_NSH | Shareability_ISH | Shareability_OSH
   deriving BEq, Inhabited, Repr
+  open Shareability
 
 inductive MemTagType where | MemTag_Untagged | MemTag_AllocationTagged | MemTag_CanonicallyTagged
   deriving BEq, Inhabited, Repr
+  open MemTagType
 
 structure MemoryAttributes where
   memtype : MemType
@@ -128,6 +145,7 @@ structure MemoryAttributes where
 
 inductive PASpace where | PAS_NonSecure | PAS_Secure | PAS_Root | PAS_Realm
   deriving BEq, Inhabited, Repr
+  open PASpace
 
 structure FullAddress where
   paspace : PASpace
@@ -136,6 +154,7 @@ structure FullAddress where
 
 inductive GPCF where | GPCF_None | GPCF_AddressSize | GPCF_Walk | GPCF_EABT | GPCF_Fail
   deriving BEq, Inhabited, Repr
+  open GPCF
 
 structure GPCFRecord where
   gpf : GPCF
@@ -144,9 +163,11 @@ structure GPCFRecord where
 
 inductive Fault where | Fault_None | Fault_AccessFlag | Fault_Alignment | Fault_Background | Fault_Domain | Fault_Permission | Fault_Translation | Fault_AddressSize | Fault_SyncExternal | Fault_SyncExternalOnWalk | Fault_SyncParity | Fault_SyncParityOnWalk | Fault_GPCFOnWalk | Fault_GPCFOnOutput | Fault_AsyncParity | Fault_AsyncExternal | Fault_TagCheck | Fault_Debug | Fault_TLBConflict | Fault_BranchTarget | Fault_HWUpdateAccessFlag | Fault_Lockdown | Fault_Exclusive | Fault_ICacheMaint
   deriving BEq, Inhabited, Repr
+  open Fault
 
 inductive ErrorState where | ErrorState_UC | ErrorState_UEU | ErrorState_UEO | ErrorState_UER | ErrorState_CE | ErrorState_Uncategorized | ErrorState_IMPDEF
   deriving BEq, Inhabited, Repr
+  open ErrorState
 
 structure FaultRecord where
   statuscode : Fault
@@ -173,9 +194,11 @@ structure FaultRecord where
 
 inductive MBReqDomain where | MBReqDomain_Nonshareable | MBReqDomain_InnerShareable | MBReqDomain_OuterShareable | MBReqDomain_FullSystem
   deriving BEq, Inhabited, Repr
+  open MBReqDomain
 
 inductive MBReqTypes where | MBReqTypes_Reads | MBReqTypes_Writes | MBReqTypes_All
   deriving BEq, Inhabited, Repr
+  open MBReqTypes
 
 structure CacheRecord where
   acctype : AccessType
@@ -200,9 +223,11 @@ structure CacheRecord where
 
 inductive Regime where | Regime_EL3 | Regime_EL30 | Regime_EL2 | Regime_EL20 | Regime_EL10
   deriving BEq, Inhabited, Repr
+  open Regime
 
 inductive TGx where | TGx_4KB | TGx_16KB | TGx_64KB
   deriving BEq, Inhabited, Repr
+  open TGx
 
 structure S1TTWParams where
   ha : (BitVec 1)
@@ -295,12 +320,15 @@ structure TranslationInfo where
 
 inductive TLBILevel where | TLBILevel_Any | TLBILevel_Last
   deriving BEq, Inhabited, Repr
+  open TLBILevel
 
 inductive TLBIOp where | TLBIOp_DALL | TLBIOp_DASID | TLBIOp_DVA | TLBIOp_IALL | TLBIOp_IASID | TLBIOp_IVA | TLBIOp_ALL | TLBIOp_ASID | TLBIOp_IPAS2 | TLBIPOp_IPAS2 | TLBIOp_VAA | TLBIOp_VA | TLBIPOp_VAA | TLBIPOp_VA | TLBIOp_VMALL | TLBIOp_VMALLS12 | TLBIOp_RIPAS2 | TLBIPOp_RIPAS2 | TLBIOp_RVAA | TLBIOp_RVA | TLBIPOp_RVAA | TLBIPOp_RVA | TLBIOp_RPA | TLBIOp_PAALL
   deriving BEq, Inhabited, Repr
+  open TLBIOp
 
 inductive TLBIMemAttr where | TLBI_AllAttr | TLBI_ExcludeXS
   deriving BEq, Inhabited, Repr
+  open TLBIMemAttr
 
 structure TLBIRecord where
   op : TLBIOp
@@ -333,6 +361,7 @@ inductive arm_acc_type where
   | SAcc_GCS (_ : Unit)
   | SAcc_GPTW (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open arm_acc_type
 
 structure TLBIInfo where
   rec' : TLBIRecord
@@ -353,6 +382,7 @@ inductive Barrier where
   | Barrier_PSSBB (_ : Unit)
   | Barrier_SB (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open Barrier
 
 abbrev boolean := (BitVec 1)
 
@@ -369,6 +399,7 @@ inductive ast where
   | DataMemoryBarrier (_ : Unit)
   | CompareAndBranch (_ : (reg_index × (BitVec 64)))
   deriving Inhabited, BEq, Repr
+  open ast
 
 inductive Register : Type where
   | R0
@@ -445,6 +476,10 @@ instance : Inhabited (RegisterRef RegisterType (BitVec 64)) where
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception
+abbrev SailME := PreSailME RegisterType trivialChoiceSource exception
+
+def pa_bits (bv : (BitVec 56)) : (BitVec 64) :=
+  (Sail.BitVec.zeroExtend bv 64)
 
 instance : Arch where
   va_size := 64
@@ -476,6 +511,7 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 namespace Out.Functions
 
@@ -509,7 +545,7 @@ open CacheOp
 open Barrier
 open AccessType
 
-/-- Type quantifiers: k_ex6037_ : Bool, k_ex6036_ : Bool -/
+/-- Type quantifiers: k_ex8847_ : Bool, k_ex8846_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -557,7 +593,7 @@ def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
   if ((l ≥b n) : Bool)
   then ((sail_ones n) <<< i)
   else
-    (let one : (BitVec n) := (sail_mask n (0b1 : (BitVec 1)))
+    (let one : (BitVec n) := (sail_mask n (1#1 : (BitVec 1)))
     (((one <<< l) - one) <<< i))
 
 /-- Type quantifiers: n : Nat, n > 0 -/
@@ -1087,9 +1123,9 @@ def num_of_PARTIDspaceType (arg_ : PARTIDspaceType) : Int :=
   | PIdSpace_NonSecure => 3
 
 def undefined_MPAMinfo (_ : Unit) : SailM MPAMinfo := do
-  (pure { mpam_sp := (← (undefined_PARTIDspaceType ()))
-          partid := (← (undefined_bitvector 16))
-          pmg := (← (undefined_bitvector 8)) })
+  (pure { mpam_sp := ← (undefined_PARTIDspaceType ())
+          partid := ← (undefined_bitvector 16)
+          pmg := ← (undefined_bitvector 8) })
 
 def undefined_AccessType (_ : Unit) : SailM AccessType := do
   (internal_pick
@@ -1266,39 +1302,39 @@ def num_of_CachePASpace (arg_ : CachePASpace) : Int :=
   | CPAS_Secure => 6
 
 def undefined_AccessDescriptor (_ : Unit) : SailM AccessDescriptor := do
-  (pure { acctype := (← (undefined_AccessType ()))
-          el := (← (undefined_bitvector 2))
-          ss := (← (undefined_SecurityState ()))
-          acqsc := (← (undefined_bool ()))
-          acqpc := (← (undefined_bool ()))
-          relsc := (← (undefined_bool ()))
-          limitedordered := (← (undefined_bool ()))
-          exclusive := (← (undefined_bool ()))
-          atomicop := (← (undefined_bool ()))
-          modop := (← (undefined_MemAtomicOp ()))
-          nontemporal := (← (undefined_bool ()))
-          read := (← (undefined_bool ()))
-          write := (← (undefined_bool ()))
-          cacheop := (← (undefined_CacheOp ()))
-          opscope := (← (undefined_CacheOpScope ()))
-          cachetype := (← (undefined_CacheType ()))
-          pan := (← (undefined_bool ()))
-          transactional := (← (undefined_bool ()))
-          nonfault := (← (undefined_bool ()))
-          firstfault := (← (undefined_bool ()))
-          first := (← (undefined_bool ()))
-          contiguous := (← (undefined_bool ()))
-          streamingsve := (← (undefined_bool ()))
-          ls64 := (← (undefined_bool ()))
-          mops := (← (undefined_bool ()))
-          rcw := (← (undefined_bool ()))
-          rcws := (← (undefined_bool ()))
-          toplevel := (← (undefined_bool ()))
-          varange := (← (undefined_VARange ()))
-          a32lsmd := (← (undefined_bool ()))
-          tagchecked := (← (undefined_bool ()))
-          tagaccess := (← (undefined_bool ()))
-          mpam := (← (undefined_MPAMinfo ())) })
+  (pure { acctype := ← (undefined_AccessType ())
+          el := ← (undefined_bitvector 2)
+          ss := ← (undefined_SecurityState ())
+          acqsc := ← (undefined_bool ())
+          acqpc := ← (undefined_bool ())
+          relsc := ← (undefined_bool ())
+          limitedordered := ← (undefined_bool ())
+          exclusive := ← (undefined_bool ())
+          atomicop := ← (undefined_bool ())
+          modop := ← (undefined_MemAtomicOp ())
+          nontemporal := ← (undefined_bool ())
+          read := ← (undefined_bool ())
+          write := ← (undefined_bool ())
+          cacheop := ← (undefined_CacheOp ())
+          opscope := ← (undefined_CacheOpScope ())
+          cachetype := ← (undefined_CacheType ())
+          pan := ← (undefined_bool ())
+          transactional := ← (undefined_bool ())
+          nonfault := ← (undefined_bool ())
+          firstfault := ← (undefined_bool ())
+          first := ← (undefined_bool ())
+          contiguous := ← (undefined_bool ())
+          streamingsve := ← (undefined_bool ())
+          ls64 := ← (undefined_bool ())
+          mops := ← (undefined_bool ())
+          rcw := ← (undefined_bool ())
+          rcws := ← (undefined_bool ())
+          toplevel := ← (undefined_bool ())
+          varange := ← (undefined_VARange ())
+          a32lsmd := ← (undefined_bool ())
+          tagchecked := ← (undefined_bool ())
+          tagaccess := ← (undefined_bool ())
+          mpam := ← (undefined_MPAMinfo ()) })
 
 def undefined_MemType (_ : Unit) : SailM MemType := do
   (internal_pick [MemType_Normal, MemType_Device])
@@ -1333,9 +1369,9 @@ def num_of_DeviceType (arg_ : DeviceType) : Int :=
   | DeviceType_nGnRnE => 3
 
 def undefined_MemAttrHints (_ : Unit) : SailM MemAttrHints := do
-  (pure { attrs := (← (undefined_bitvector 2))
-          hints := (← (undefined_bitvector 2))
-          transient := (← (undefined_bool ())) })
+  (pure { attrs := ← (undefined_bitvector 2)
+          hints := ← (undefined_bitvector 2)
+          transient := ← (undefined_bool ()) })
 
 def undefined_Shareability (_ : Unit) : SailM Shareability := do
   (internal_pick [Shareability_NSH, Shareability_ISH, Shareability_OSH])
@@ -1370,14 +1406,14 @@ def num_of_MemTagType (arg_ : MemTagType) : Int :=
   | MemTag_CanonicallyTagged => 2
 
 def undefined_MemoryAttributes (_ : Unit) : SailM MemoryAttributes := do
-  (pure { memtype := (← (undefined_MemType ()))
-          device := (← (undefined_DeviceType ()))
-          inner := (← (undefined_MemAttrHints ()))
-          outer := (← (undefined_MemAttrHints ()))
-          shareability := (← (undefined_Shareability ()))
-          tags := (← (undefined_MemTagType ()))
-          notagaccess := (← (undefined_bool ()))
-          xs := (← (undefined_bitvector 1)) })
+  (pure { memtype := ← (undefined_MemType ())
+          device := ← (undefined_DeviceType ())
+          inner := ← (undefined_MemAttrHints ())
+          outer := ← (undefined_MemAttrHints ())
+          shareability := ← (undefined_Shareability ())
+          tags := ← (undefined_MemTagType ())
+          notagaccess := ← (undefined_bool ())
+          xs := ← (undefined_bitvector 1) })
 
 def undefined_PASpace (_ : Unit) : SailM PASpace := do
   (internal_pick [PAS_NonSecure, PAS_Secure, PAS_Root, PAS_Realm])
@@ -1398,8 +1434,8 @@ def num_of_PASpace (arg_ : PASpace) : Int :=
   | PAS_Realm => 3
 
 def undefined_FullAddress (_ : Unit) : SailM FullAddress := do
-  (pure { paspace := (← (undefined_PASpace ()))
-          address := (← (undefined_bitvector 56)) })
+  (pure { paspace := ← (undefined_PASpace ())
+          address := ← (undefined_bitvector 56) })
 
 def undefined_GPCF (_ : Unit) : SailM GPCF := do
   (internal_pick [GPCF_None, GPCF_AddressSize, GPCF_Walk, GPCF_EABT, GPCF_Fail])
@@ -1422,8 +1458,8 @@ def num_of_GPCF (arg_ : GPCF) : Int :=
   | GPCF_Fail => 4
 
 def undefined_GPCFRecord (_ : Unit) : SailM GPCFRecord := do
-  (pure { gpf := (← (undefined_GPCF ()))
-          level := (← (undefined_int ())) })
+  (pure { gpf := ← (undefined_GPCF ())
+          level := ← (undefined_int ()) })
 
 def undefined_Fault (_ : Unit) : SailM Fault := do
   (internal_pick
@@ -1510,26 +1546,26 @@ def num_of_ErrorState (arg_ : ErrorState) : Int :=
   | ErrorState_IMPDEF => 6
 
 def undefined_FaultRecord (_ : Unit) : SailM FaultRecord := do
-  (pure { statuscode := (← (undefined_Fault ()))
-          access := (← (undefined_AccessDescriptor ()))
-          ipaddress := (← (undefined_FullAddress ()))
-          gpcf := (← (undefined_GPCFRecord ()))
-          paddress := (← (undefined_FullAddress ()))
-          gpcfs2walk := (← (undefined_bool ()))
-          s2fs1walk := (← (undefined_bool ()))
-          write := (← (undefined_bool ()))
-          s1tagnotdata := (← (undefined_bool ()))
-          tagaccess := (← (undefined_bool ()))
-          level := (← (undefined_int ()))
-          extflag := (← (undefined_bitvector 1))
-          secondstage := (← (undefined_bool ()))
-          assuredonly := (← (undefined_bool ()))
-          toplevel := (← (undefined_bool ()))
-          overlay := (← (undefined_bool ()))
-          dirtybit := (← (undefined_bool ()))
-          domain := (← (undefined_bitvector 4))
-          merrorstate := (← (undefined_ErrorState ()))
-          debugmoe := (← (undefined_bitvector 4)) })
+  (pure { statuscode := ← (undefined_Fault ())
+          access := ← (undefined_AccessDescriptor ())
+          ipaddress := ← (undefined_FullAddress ())
+          gpcf := ← (undefined_GPCFRecord ())
+          paddress := ← (undefined_FullAddress ())
+          gpcfs2walk := ← (undefined_bool ())
+          s2fs1walk := ← (undefined_bool ())
+          write := ← (undefined_bool ())
+          s1tagnotdata := ← (undefined_bool ())
+          tagaccess := ← (undefined_bool ())
+          level := ← (undefined_int ())
+          extflag := ← (undefined_bitvector 1)
+          secondstage := ← (undefined_bool ())
+          assuredonly := ← (undefined_bool ())
+          toplevel := ← (undefined_bool ())
+          overlay := ← (undefined_bool ())
+          dirtybit := ← (undefined_bool ())
+          domain := ← (undefined_bitvector 4)
+          merrorstate := ← (undefined_ErrorState ())
+          debugmoe := ← (undefined_bitvector 4) })
 
 def undefined_MBReqDomain (_ : Unit) : SailM MBReqDomain := do
   (internal_pick
@@ -1567,24 +1603,24 @@ def num_of_MBReqTypes (arg_ : MBReqTypes) : Int :=
   | MBReqTypes_All => 2
 
 def undefined_CacheRecord (_ : Unit) : SailM CacheRecord := do
-  (pure { acctype := (← (undefined_AccessType ()))
-          cacheop := (← (undefined_CacheOp ()))
-          opscope := (← (undefined_CacheOpScope ()))
-          cachetype := (← (undefined_CacheType ()))
-          regval := (← (undefined_bitvector 64))
-          paddress := (← (undefined_FullAddress ()))
-          vaddress := (← (undefined_bitvector 64))
-          setnum := (← (undefined_int ()))
-          waynum := (← (undefined_int ()))
-          level := (← (undefined_int ()))
-          shareability := (← (undefined_Shareability ()))
-          translated := (← (undefined_bool ()))
-          is_vmid_valid := (← (undefined_bool ()))
-          vmid := (← (undefined_bitvector 16))
-          is_asid_valid := (← (undefined_bool ()))
-          asid := (← (undefined_bitvector 16))
-          security := (← (undefined_SecurityState ()))
-          cpas := (← (undefined_CachePASpace ())) })
+  (pure { acctype := ← (undefined_AccessType ())
+          cacheop := ← (undefined_CacheOp ())
+          opscope := ← (undefined_CacheOpScope ())
+          cachetype := ← (undefined_CacheType ())
+          regval := ← (undefined_bitvector 64)
+          paddress := ← (undefined_FullAddress ())
+          vaddress := ← (undefined_bitvector 64)
+          setnum := ← (undefined_int ())
+          waynum := ← (undefined_int ())
+          level := ← (undefined_int ())
+          shareability := ← (undefined_Shareability ())
+          translated := ← (undefined_bool ())
+          is_vmid_valid := ← (undefined_bool ())
+          vmid := ← (undefined_bitvector 16)
+          is_asid_valid := ← (undefined_bool ())
+          asid := ← (undefined_bitvector 16)
+          security := ← (undefined_SecurityState ())
+          cpas := ← (undefined_CachePASpace ()) })
 
 def undefined_Regime (_ : Unit) : SailM Regime := do
   (internal_pick [Regime_EL3, Regime_EL30, Regime_EL2, Regime_EL20, Regime_EL10])
@@ -1623,79 +1659,79 @@ def num_of_TGx (arg_ : TGx) : Int :=
   | TGx_64KB => 2
 
 def undefined_S1TTWParams (_ : Unit) : SailM S1TTWParams := do
-  (pure { ha := (← (undefined_bitvector 1))
-          hd := (← (undefined_bitvector 1))
-          tbi := (← (undefined_bitvector 1))
-          tbid := (← (undefined_bitvector 1))
-          nfd := (← (undefined_bitvector 1))
-          e0pd := (← (undefined_bitvector 1))
-          d128 := (← (undefined_bitvector 1))
-          aie := (← (undefined_bitvector 1))
-          mair2 := (← (undefined_MAIRType ()))
-          ds := (← (undefined_bitvector 1))
-          ps := (← (undefined_bitvector 3))
-          txsz := (← (undefined_bitvector 6))
-          epan := (← (undefined_bitvector 1))
-          dct := (← (undefined_bitvector 1))
-          nv1 := (← (undefined_bitvector 1))
-          cmow := (← (undefined_bitvector 1))
-          pnch := (← (undefined_bitvector 1))
-          disch := (← (undefined_bitvector 1))
-          haft := (← (undefined_bitvector 1))
-          mtx := (← (undefined_bitvector 1))
-          skl := (← (undefined_bitvector 2))
-          pie := (← (undefined_bitvector 1))
-          pir := (← (undefined_S1PIRType ()))
-          pire0 := (← (undefined_S1PIRType ()))
-          emec := (← (undefined_bitvector 1))
-          amec := (← (undefined_bitvector 1))
-          t0sz := (← (undefined_bitvector 3))
-          t1sz := (← (undefined_bitvector 3))
-          uwxn := (← (undefined_bitvector 1))
-          tgx := (← (undefined_TGx ()))
-          irgn := (← (undefined_bitvector 2))
-          orgn := (← (undefined_bitvector 2))
-          sh := (← (undefined_bitvector 2))
-          hpd := (← (undefined_bitvector 1))
-          ee := (← (undefined_bitvector 1))
-          wxn := (← (undefined_bitvector 1))
-          ntlsmd := (← (undefined_bitvector 1))
-          dc := (← (undefined_bitvector 1))
-          sif := (← (undefined_bitvector 1))
-          mair := (← (undefined_MAIRType ())) })
+  (pure { ha := ← (undefined_bitvector 1)
+          hd := ← (undefined_bitvector 1)
+          tbi := ← (undefined_bitvector 1)
+          tbid := ← (undefined_bitvector 1)
+          nfd := ← (undefined_bitvector 1)
+          e0pd := ← (undefined_bitvector 1)
+          d128 := ← (undefined_bitvector 1)
+          aie := ← (undefined_bitvector 1)
+          mair2 := ← (undefined_MAIRType ())
+          ds := ← (undefined_bitvector 1)
+          ps := ← (undefined_bitvector 3)
+          txsz := ← (undefined_bitvector 6)
+          epan := ← (undefined_bitvector 1)
+          dct := ← (undefined_bitvector 1)
+          nv1 := ← (undefined_bitvector 1)
+          cmow := ← (undefined_bitvector 1)
+          pnch := ← (undefined_bitvector 1)
+          disch := ← (undefined_bitvector 1)
+          haft := ← (undefined_bitvector 1)
+          mtx := ← (undefined_bitvector 1)
+          skl := ← (undefined_bitvector 2)
+          pie := ← (undefined_bitvector 1)
+          pir := ← (undefined_S1PIRType ())
+          pire0 := ← (undefined_S1PIRType ())
+          emec := ← (undefined_bitvector 1)
+          amec := ← (undefined_bitvector 1)
+          t0sz := ← (undefined_bitvector 3)
+          t1sz := ← (undefined_bitvector 3)
+          uwxn := ← (undefined_bitvector 1)
+          tgx := ← (undefined_TGx ())
+          irgn := ← (undefined_bitvector 2)
+          orgn := ← (undefined_bitvector 2)
+          sh := ← (undefined_bitvector 2)
+          hpd := ← (undefined_bitvector 1)
+          ee := ← (undefined_bitvector 1)
+          wxn := ← (undefined_bitvector 1)
+          ntlsmd := ← (undefined_bitvector 1)
+          dc := ← (undefined_bitvector 1)
+          sif := ← (undefined_bitvector 1)
+          mair := ← (undefined_MAIRType ()) })
 
 def undefined_S2TTWParams (_ : Unit) : SailM S2TTWParams := do
-  (pure { ha := (← (undefined_bitvector 1))
-          hd := (← (undefined_bitvector 1))
-          sl2 := (← (undefined_bitvector 1))
-          ds := (← (undefined_bitvector 1))
-          d128 := (← (undefined_bitvector 1))
-          sw := (← (undefined_bitvector 1))
-          nsw := (← (undefined_bitvector 1))
-          sa := (← (undefined_bitvector 1))
-          nsa := (← (undefined_bitvector 1))
-          ps := (← (undefined_bitvector 3))
-          txsz := (← (undefined_bitvector 6))
-          fwb := (← (undefined_bitvector 1))
-          cmow := (← (undefined_bitvector 1))
-          skl := (← (undefined_bitvector 2))
-          s2pie := (← (undefined_bitvector 1))
-          s2pir := (← (undefined_S2PIRType ()))
-          tl0 := (← (undefined_bitvector 1))
-          tl1 := (← (undefined_bitvector 1))
-          assuredonly := (← (undefined_bitvector 1))
-          haft := (← (undefined_bitvector 1))
-          emec := (← (undefined_bitvector 1))
-          s := (← (undefined_bitvector 1))
-          t0sz := (← (undefined_bitvector 4))
-          tgx := (← (undefined_TGx ()))
-          sl0 := (← (undefined_bitvector 2))
-          irgn := (← (undefined_bitvector 2))
-          orgn := (← (undefined_bitvector 2))
-          sh := (← (undefined_bitvector 2))
-          ee := (← (undefined_bitvector 1))
-          ptw := (← (undefined_bitvector 1))
-          vm := (← (undefined_bitvector 1)) })
+  (pure { ha := ← (undefined_bitvector 1)
+          hd := ← (undefined_bitvector 1)
+          sl2 := ← (undefined_bitvector 1)
+          ds := ← (undefined_bitvector 1)
+          d128 := ← (undefined_bitvector 1)
+          sw := ← (undefined_bitvector 1)
+          nsw := ← (undefined_bitvector 1)
+          sa := ← (undefined_bitvector 1)
+          nsa := ← (undefined_bitvector 1)
+          ps := ← (undefined_bitvector 3)
+          txsz := ← (undefined_bitvector 6)
+          fwb := ← (undefined_bitvector 1)
+          cmow := ← (undefined_bitvector 1)
+          skl := ← (undefined_bitvector 2)
+          s2pie := ← (undefined_bitvector 1)
+          s2pir := ← (undefined_S2PIRType ())
+          tl0 := ← (undefined_bitvector 1)
+          tl1 := ← (undefined_bitvector 1)
+          assuredonly := ← (undefined_bitvector 1)
+          haft := ← (undefined_bitvector 1)
+          emec := ← (undefined_bitvector 1)
+          s := ← (undefined_bitvector 1)
+          t0sz := ← (undefined_bitvector 4)
+          tgx := ← (undefined_TGx ())
+          sl0 := ← (undefined_bitvector 2)
+          irgn := ← (undefined_bitvector 2)
+          orgn := ← (undefined_bitvector 2)
+          sh := ← (undefined_bitvector 2)
+          ee := ← (undefined_bitvector 1)
+          ptw := ← (undefined_bitvector 1)
+          vm := ← (undefined_bitvector 1) })
 
 def undefined_TLBILevel (_ : Unit) : SailM TLBILevel := do
   (internal_pick [TLBILevel_Any, TLBILevel_Last])
@@ -1785,30 +1821,30 @@ def num_of_TLBIMemAttr (arg_ : TLBIMemAttr) : Int :=
   | TLBI_ExcludeXS => 1
 
 def undefined_TLBIRecord (_ : Unit) : SailM TLBIRecord := do
-  (pure { op := (← (undefined_TLBIOp ()))
-          from_aarch64 := (← (undefined_bool ()))
-          security := (← (undefined_SecurityState ()))
-          regime := (← (undefined_Regime ()))
-          vmid := (← (undefined_bitvector 16))
-          asid := (← (undefined_bitvector 16))
-          level := (← (undefined_TLBILevel ()))
-          attr := (← (undefined_TLBIMemAttr ()))
-          ipaspace := (← (undefined_PASpace ()))
-          address := (← (undefined_bitvector 64))
-          end_address_name := (← (undefined_bitvector 64))
-          d64 := (← (undefined_bool ()))
-          d128 := (← (undefined_bool ()))
-          ttl := (← (undefined_bitvector 4))
-          tg := (← (undefined_bitvector 2)) })
+  (pure { op := ← (undefined_TLBIOp ())
+          from_aarch64 := ← (undefined_bool ())
+          security := ← (undefined_SecurityState ())
+          regime := ← (undefined_Regime ())
+          vmid := ← (undefined_bitvector 16)
+          asid := ← (undefined_bitvector 16)
+          level := ← (undefined_TLBILevel ())
+          attr := ← (undefined_TLBIMemAttr ())
+          ipaspace := ← (undefined_PASpace ())
+          address := ← (undefined_bitvector 64)
+          end_address_name := ← (undefined_bitvector 64)
+          d64 := ← (undefined_bool ())
+          d128 := ← (undefined_bool ())
+          ttl := ← (undefined_bitvector 4)
+          tg := ← (undefined_bitvector 2) })
 
 def undefined_TLBIInfo (_ : Unit) : SailM TLBIInfo := do
-  (pure { rec' := (← (undefined_TLBIRecord ()))
-          shareability := (← (undefined_Shareability ())) })
+  (pure { rec' := ← (undefined_TLBIRecord ())
+          shareability := ← (undefined_Shareability ()) })
 
 def undefined_DxB (_ : Unit) : SailM DxB := do
-  (pure { domain := (← (undefined_MBReqDomain ()))
-          types := (← (undefined_MBReqTypes ()))
-          nXS := (← (undefined_bool ())) })
+  (pure { domain := ← (undefined_MBReqDomain ())
+          types := ← (undefined_MBReqTypes ())
+          nXS := ← (undefined_bool ()) })
 
 def GPRs : (Vector (RegisterRef (BitVec 64)) 31) :=
   #v[(.Reg R0), (.Reg R1), (.Reg R2), (.Reg R3), (.Reg R4), (.Reg R5), (.Reg R6), (.Reg R7), (.Reg R8), (.Reg R9), (.Reg R10), (.Reg R11), (.Reg R12), (.Reg R13), (.Reg R14), (.Reg R15), (.Reg R16), (.Reg R17), (.Reg R18), (.Reg R19), (.Reg R20), (.Reg R21), (.Reg R22), (.Reg R23), (.Reg R24), (.Reg R25), (.Reg R26), (.Reg R27), (.Reg R28), (.Reg R29), (.Reg R30)]
@@ -1823,7 +1859,7 @@ def wX (n : Nat) (value : (BitVec 64)) : SailM Unit := do
 def rX (n : Nat) : SailM (BitVec 64) := do
   if ((n != 31) : Bool)
   then (reg_deref (GetElem?.getElem! GPRs n))
-  else (pure (0x0000000000000000 : (BitVec 64)))
+  else (pure 0x0000000000000000#64)
 
 def rPC (_ : Unit) : SailM (BitVec 64) := do
   readReg _PC
@@ -1832,45 +1868,61 @@ def wPC (pc : (BitVec 64)) : SailM Unit := do
   writeReg _PC pc
 
 def decodeLoadStoreRegister (opc : (BitVec 2)) (Rm : (BitVec 5)) (option_v : (BitVec 3)) (S : (BitVec 1)) (Rn : (BitVec 5)) (Rt : (BitVec 5)) : (Option ast) :=
-  let t : reg_index := (BitVec.toNat Rt)
-  let n : reg_index := (BitVec.toNat Rn)
-  let m : reg_index := (BitVec.toNat Rm)
-  if (((option_v != (0b011 : (BitVec 3))) || (S == 1#1)) : Bool)
+  let t : reg_index := (BitVec.toNatInt Rt)
+  let n : reg_index := (BitVec.toNatInt Rn)
+  let m : reg_index := (BitVec.toNatInt Rm)
+  if (((option_v != 0b011#3) || (S == 1#1)) : Bool)
   then none
   else
-    (if ((opc == (0b00 : (BitVec 2))) : Bool)
+    (if ((opc == 0b00#2) : Bool)
     then (some (LoadRegister (t, n, m)))
     else
-      (if ((opc == (0b01 : (BitVec 2))) : Bool)
+      (if ((opc == 0b01#2) : Bool)
       then (some (StoreRegister (t, n, m)))
       else none))
 
 def decodeExclusiveOr (sf : (BitVec 1)) (shift : (BitVec 2)) (N : (BitVec 1)) (Rm : (BitVec 5)) (imm6 : (BitVec 6)) (Rn : (BitVec 5)) (Rd : (BitVec 5)) : (Option ast) :=
-  let d : reg_index := (BitVec.toNat Rd)
-  let n : reg_index := (BitVec.toNat Rn)
-  let m : reg_index := (BitVec.toNat Rm)
+  let d : reg_index := (BitVec.toNatInt Rd)
+  let n : reg_index := (BitVec.toNatInt Rn)
+  let m : reg_index := (BitVec.toNatInt Rm)
   if (((sf == 0#1) && ((BitVec.access imm6 5) == 1#1)) : Bool)
   then none
   else
-    (if ((imm6 != (0b000000 : (BitVec 6))) : Bool)
+    (if ((imm6 != 0b000000#6) : Bool)
     then none
     else (some (ExclusiveOr (d, n, m))))
 
 def decodeDataMemoryBarrier (CRm : (BitVec 4)) : (Option ast) :=
-  if ((CRm != (0xF : (BitVec 4))) : Bool)
+  if ((CRm != 0b1111#4) : Bool)
   then none
   else (some (DataMemoryBarrier ()))
 
 def decodeCompareAndBranch (imm19 : (BitVec 19)) (Rt : (BitVec 5)) : (Option ast) :=
-  let t : reg_index := (BitVec.toNat Rt)
-  let offset : (BitVec 64) := (Sail.BitVec.signExtend (imm19 ++ (0b00 : (BitVec 2))) 64)
+  let t : reg_index := (BitVec.toNatInt Rt)
+  let offset : (BitVec 64) := (Sail.BitVec.signExtend (imm19 ++ 0b00#2) 64)
   (some (CompareAndBranch (t, offset)))
+
+/-- Type quantifiers: k_n : Nat, k_n ≥ 0 -/
+def __monomorphize (bv : (BitVec k_n)) : (BitVec k_n) :=
+  bv
+
+/-- Type quantifiers: k_n : Nat, k_vasize : Nat, k_pa : Type, k_translation_summary : Type, k_arch_ak
+  : Type, k_n > 0 ∧ k_vasize > 0 -/
+def mem_write_request_is_exclusive (request : (Mem_write_request k_n k_vasize k_pa k_translation_summary k_arch_ak)) : Bool :=
+  match request.access_kind with
+  | .AK_explicit eak =>
+    (match eak.variety with
+    | AV_exclusive => true
+    | _ => false)
+  | _ => false
+
+def __monomorphize_writes : Bool := false
 
 def wMem (addr : (BitVec 64)) (value : (BitVec 64)) : SailM Unit := do
   let req : (Mem_write_request 8 64 (BitVec 56) (Option TranslationInfo) arm_acc_type) :=
     { access_kind := (AK_explicit
-        { variety := AV_plain
-          strength := AS_normal })
+          { variety := AV_plain
+            strength := AS_normal })
       va := (some addr)
       pa := (Sail.BitVec.truncate addr 56)
       translation := none
@@ -1899,11 +1951,30 @@ def execute_StoreRegister (t : Nat) (n : Nat) (m : Nat) : SailM Unit := do
   let data ← do (rX t)
   (wMem addr data)
 
+/-- Type quantifiers: k_n : Nat, k_vasize : Nat, k_pa : Type, k_translation_summary : Type, k_arch_ak
+  : Type, k_n > 0 ∧ k_vasize > 0 -/
+def mem_read_request_is_exclusive (request : (Mem_read_request k_n k_vasize k_pa k_translation_summary k_arch_ak)) : Bool :=
+  match request.access_kind with
+  | .AK_explicit eak =>
+    (match eak.variety with
+    | AV_exclusive => true
+    | _ => false)
+  | _ => false
+
+/-- Type quantifiers: k_n : Nat, k_vasize : Nat, k_pa : Type, k_translation_summary : Type, k_arch_ak
+  : Type, k_n > 0 ∧ k_vasize > 0 -/
+def mem_read_request_is_ifetch (request : (Mem_read_request k_n k_vasize k_pa k_translation_summary k_arch_ak)) : Bool :=
+  match request.access_kind with
+  | .AK_ifetch () => true
+  | _ => false
+
+def __monomorphize_reads : Bool := false
+
 def rMem (addr : (BitVec 64)) : SailM (BitVec 64) := do
   let req : (Mem_read_request 8 64 (BitVec 56) (Option TranslationInfo) arm_acc_type) :=
     { access_kind := (AK_explicit
-        { variety := AV_plain
-          strength := AS_normal })
+          { variety := AV_plain
+            strength := AS_normal })
       va := (some addr)
       pa := (Sail.BitVec.truncate addr 56)
       translation := none
@@ -1943,7 +2014,7 @@ def execute_DataMemoryBarrier (_ : Unit) : SailM Unit := do
 /-- Type quantifiers: t : Nat, 0 ≤ t ∧ t ≤ 31 -/
 def execute_CompareAndBranch (t : Nat) (offset : (BitVec 64)) : SailM Unit := do
   let operand ← do (rX t)
-  if ((operand == (0x0000000000000000 : (BitVec 64))) : Bool)
+  if ((operand == 0x0000000000000000#64) : Bool)
   then
     (do
       let base ← do (rPC ())
@@ -1961,9 +2032,10 @@ def execute (merge_var : ast) : SailM Unit := do
 
 def decode (merge_var : (BitVec 32)) : (Option ast) :=
   match_bv merge_var with
-  | [11,111,0,00,opc:2,1,Rm:5,option_v:3,S,10,Rn:5,Rt:5] =>
+  | [11,111,0,00,opc:2,1,Rm:5,option_v:3,S:1,10,Rn:5,Rt:5] =>
     (decodeLoadStoreRegister opc Rm option_v S Rn Rt)
-  | [sf,10,01010,shift:2,N,Rm:5,imm6:6,Rn:5,Rd:5] => (decodeExclusiveOr sf shift N Rm imm6 Rn Rd)
+  | [sf:1,10,01010,shift:2,N:1,Rm:5,imm6:6,Rn:5,Rd:5] =>
+    (decodeExclusiveOr sf shift N Rm imm6 Rn Rd)
   | [1101010100,0,00,011,0011,CRm:4,1,01,11111] => (decodeDataMemoryBarrier CRm)
   | [1,011010,0,imm19:19,Rt:5] => (decodeCompareAndBranch imm19 Rt)
   | _ => none
@@ -2047,9 +2119,13 @@ def sail_ignore_write_to (reg : (RegisterRef k_a)) : Unit :=
 def sail_pick_dependency (reg : (RegisterRef k_a)) : Unit :=
   (sail_mark_register reg "pick")
 
-/-- Type quantifiers: k_n : Nat, k_n ≥ 0 -/
-def __monomorphize (bv : (BitVec k_n)) : (BitVec k_n) :=
-  bv
+/-- Type quantifiers: n : Int -/
+def __monomorphize_int (n : Int) : Int :=
+  n
+
+/-- Type quantifiers: k_b : Bool -/
+def __monomorphize_bool (b : Bool) : Bool :=
+  b
 
 /-- Type quantifiers: n : Int -/
 def __monomorphize_int (n : Int) : Int :=
@@ -2092,42 +2168,8 @@ def num_of_Access_strength (arg_ : Access_strength) : Int :=
   | AS_acq_rcpc => 2
 
 def undefined_Explicit_access_kind (_ : Unit) : SailM Explicit_access_kind := do
-  (pure { variety := (← (undefined_Access_variety ()))
-          strength := (← (undefined_Access_strength ())) })
-
-/-- Type quantifiers: k_n : Nat, k_vasize : Nat, k_pa : Type, k_translation_summary : Type, k_arch_ak
-  : Type, k_n > 0 ∧ k_vasize > 0 -/
-def mem_read_request_is_exclusive (request : (Mem_read_request k_n k_vasize k_pa k_translation_summary k_arch_ak)) : Bool :=
-  match request.access_kind with
-  | .AK_explicit eak =>
-    (match eak.variety with
-    | AV_exclusive => true
-    | _ => false)
-  | _ => false
-
-/-- Type quantifiers: k_n : Nat, k_vasize : Nat, k_pa : Type, k_translation_summary : Type, k_arch_ak
-  : Type, k_n > 0 ∧ k_vasize > 0 -/
-def mem_read_request_is_ifetch (request : (Mem_read_request k_n k_vasize k_pa k_translation_summary k_arch_ak)) : Bool :=
-  match request.access_kind with
-  | .AK_ifetch () => true
-  | _ => false
-
-def __monomorphize_reads : Bool := false
-
-def __monomorphize_writes : Bool := false
-
-/-- Type quantifiers: k_n : Nat, k_vasize : Nat, k_pa : Type, k_translation_summary : Type, k_arch_ak
-  : Type, k_n > 0 ∧ k_vasize > 0 -/
-def mem_write_request_is_exclusive (request : (Mem_write_request k_n k_vasize k_pa k_translation_summary k_arch_ak)) : Bool :=
-  match request.access_kind with
-  | .AK_explicit eak =>
-    (match eak.variety with
-    | AV_exclusive => true
-    | _ => false)
-  | _ => false
-
-def pa_bits (bv : (BitVec 56)) : (BitVec 64) :=
-  (Sail.BitVec.zeroExtend bv 64)
+  (pure { variety := ← (undefined_Access_variety ())
+          strength := ← (undefined_Access_strength ()) })
 
 def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg _PC (← (undefined_bitvector 64))
