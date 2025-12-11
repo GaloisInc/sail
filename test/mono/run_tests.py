@@ -21,7 +21,8 @@ def chunks(filenames, cores):
     ys = []
     chunk = []
     for filename in filenames:
-        chunk.append(filename)
+        if not args.test or filename in args.test:
+            chunk.append(filename)
         if len(chunk) >= cores:
             ys.append(list(chunk))
             chunk = []

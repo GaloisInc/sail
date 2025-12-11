@@ -9,6 +9,9 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
+
+abbrev bit := (BitVec 1)
 
 abbrev bits k_n := (BitVec k_n)
 
@@ -17,6 +20,7 @@ inductive option (k_a : Type) where
   | Some (_ : k_a)
   | None (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open option
 
 structure My_struct where
   field1 : Int
@@ -54,6 +58,7 @@ instance : Inhabited (RegisterRef RegisterType Nat) where
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception
+abbrev SailME := PreSailME RegisterType trivialChoiceSource exception
 
 
 XXXXXXXXX
@@ -71,13 +76,14 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 namespace Out.Functions
 
 open option
 open Register
 
-/-- Type quantifiers: k_ex948_ : Bool, k_ex947_ : Bool -/
+/-- Type quantifiers: k_ex1090_ : Bool, k_ex1089_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -125,7 +131,7 @@ def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
   if ((l ≥b n) : Bool)
   then ((sail_ones n) <<< i)
   else
-    (let one : (BitVec n) := (sail_mask n (0b1 : (BitVec 1)))
+    (let one : (BitVec n) := (sail_mask n (1#1 : (BitVec 1)))
     (((one <<< l) - one) <<< i))
 
 /-- Type quantifiers: n : Nat, n > 0 -/
@@ -175,18 +181,18 @@ def test (_ : Unit) : SailM Int := do
   readReg INT
 
 def undefined_My_struct (_ : Unit) : SailM My_struct := do
-  (pure { field1 := (← (undefined_int ()))
-          field2 := (← (undefined_bit ())) })
+  (pure { field1 := ← (undefined_int ())
+          field2 := ← (undefined_bitvector 1) })
 
-/-- Type quantifiers: k_ex1058_ : Bool -/
+/-- Type quantifiers: k_ex1200_ : Bool -/
 def test_reg_if_struct (x : My_struct) (b : Bool) : SailM My_struct := do
   let y ← do
-    (pure { x with field1 := (← if (b : Bool)
+    (pure { x with field1 := ← if (b : Bool)
         then readReg INT
-        else (pure 3)) })
-  (pure { y with field1 := (← if ((← readReg BOOL) : Bool)
+        else (pure 3) })
+  (pure { y with field1 := ← if ((← readReg BOOL) : Bool)
       then readReg INT
-      else (pure 3)) })
+      else (pure 3) })
 
 def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg R0 (← (undefined_bitvector 64))
@@ -194,7 +200,7 @@ def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg INT (← (undefined_int ()))
   writeReg BOOL (← (undefined_bool ()))
   writeReg NAT (← (undefined_nat ()))
-  writeReg BIT (← (undefined_bit ()))
+  writeReg BIT (← (undefined_bitvector 1))
 
 def sail_model_init (x_0 : Unit) : SailM Unit := do
   (initialize_registers ())

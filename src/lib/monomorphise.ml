@@ -76,7 +76,7 @@ let rec lem_nexps_of_typ (Typ_aux (t, l)) =
   | Typ_tuple ts -> List.fold_left (fun s t -> NexpSet.union s (trec t)) NexpSet.empty ts
   | Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp m, _)]) ->
       let m = nexp_simp m in
-      if !opt_mwords && not (is_nexp_constant m) then NexpSet.singleton (orig_nexp m) else trec bit_typ
+      if !opt_mwords && not (is_nexp_constant m) then NexpSet.singleton (orig_nexp m) else NexpSet.empty
   | Typ_app (Id_aux (Id "vector", _), [A_aux (A_nexp m, _); A_aux (A_typ elem_typ, _)]) -> trec elem_typ
   | Typ_app (Id_aux (Id "register", _), [A_aux (A_typ etyp, _)]) -> trec etyp
   | Typ_app (Id_aux (Id "range", _), _) | Typ_app (Id_aux (Id "implicit", _), _) | Typ_app (Id_aux (Id "atom", _), _) ->
@@ -339,9 +339,13 @@ let split_src_type all_errors env id ty (TypQ_aux (q, ql)) =
             | [] -> ty
             | _ -> Typ_aux (Typ_exist (kopts, nc', ty), l)
           in
-          (inst @ inst0, ty)
+          let uninhabited =
+            let env = List.fold_left (fun env kopt -> Env.add_typ_var Parse_ast.Unknown kopt env) env kopts in
+            Type_check.prove __POS__ env (nc_not nc')
+          in
+          if uninhabited then None else Some (inst @ inst0, ty)
         in
-        let tys = List.concat (List.map (fun instty -> List.map (ty_and_inst instty) insts) tys) in
+        let tys = List.concat (List.map (fun instty -> List.filter_map (ty_and_inst instty) insts) tys) in
         let free = List.fold_left (fun vars k -> KidSet.remove (kopt_kid k) vars) vars kopts in
         (free, tys)
     | Typ_internal_unknown -> Reporting.unreachable l __POS__ "escaped Typ_internal_unknown"
@@ -754,20 +758,7 @@ let split_defs target all_errors (splits : split_req list) env ast =
               )
             )
             ns
-        with Type_error _ -> (
-          match id with
-          | Id_aux (Id "bit", _) ->
-              List.map
-                (fun b ->
-                  ( P_aux (P_lit (L_aux (b, new_l)), (l, annot)),
-                    [(var, E_aux (E_lit (L_aux (b, new_l)), (new_l, annot)))],
-                    [],
-                    KBindings.empty
-                  )
-                )
-                [L_zero; L_one]
-          | _ -> cannot ("don't know about type " ^ string_of_id id)
-        )
+        with Type_error _ -> cannot ("don't know about type " ^ string_of_id id)
       )
     | Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp len, _)]) -> (
         match len with

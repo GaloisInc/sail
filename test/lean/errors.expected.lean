@@ -9,6 +9,9 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
+
+abbrev bit := (BitVec 1)
 
 abbrev bits k_n := (BitVec k_n)
 
@@ -17,6 +20,7 @@ inductive option (k_a : Type) where
   | Some (_ : k_a)
   | None (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open option
 
 inductive Register : Type where
   | dummy
@@ -31,6 +35,7 @@ instance : Inhabited (RegisterRef RegisterType (BitVec 1)) where
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception
+abbrev SailME := PreSailME RegisterType trivialChoiceSource exception
 
 
 XXXXXXXXX
@@ -48,13 +53,14 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 namespace Out.Functions
 
 open option
 open Register
 
-/-- Type quantifiers: k_ex736_ : Bool, k_ex735_ : Bool -/
+/-- Type quantifiers: k_ex840_ : Bool, k_ex839_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -102,7 +108,7 @@ def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
   if ((l ≥b n) : Bool)
   then ((sail_ones n) <<< i)
   else
-    (let one : (BitVec n) := (sail_mask n (0b1 : (BitVec 1)))
+    (let one : (BitVec n) := (sail_mask n (1#1 : (BitVec 1)))
     (((one <<< l) - one) <<< i))
 
 /-- Type quantifiers: n : Nat, n > 0 -/
@@ -147,19 +153,19 @@ def concat_str_bits (str : String) (x : (BitVec k_n)) : String :=
 def concat_str_dec (str : String) (x : Int) : String :=
   (HAppend.hAppend str (Int.repr x))
 
-/-- Type quantifiers: k_ex833_ : Bool -/
+/-- Type quantifiers: k_ex937_ : Bool -/
 def test_exit (b : Bool) : SailM Unit := do
   if (b : Bool)
   then throw Error.Exit
   else (pure ())
 
-/-- Type quantifiers: k_ex835_ : Bool -/
+/-- Type quantifiers: k_ex939_ : Bool -/
 def test_assert (b : Bool) : SailM (BitVec 1) := do
   assert b "b is false"
   (pure 1#1)
 
 def initialize_registers (_ : Unit) : SailM Unit := do
-  writeReg dummy (← (undefined_bit ()))
+  writeReg dummy (← (undefined_bitvector 1))
 
 def sail_model_init (x_0 : Unit) : SailM Unit := do
   (initialize_registers ())

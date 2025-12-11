@@ -55,7 +55,7 @@ module P = Parse_ast
 
 (* See mli file for details on what these flags do *)
 let opt_fast_undefined = ref false
-let opt_magic_hash = ref false
+let opt_allow_internal = ref false
 let opt_strict_bitvector = ref false
 
 module StringSet = Set.Make (String)
@@ -224,9 +224,9 @@ let to_ast_id ctx (P.Id_aux (id, l)) =
   in
   if string_contains (string_of_parse_id_aux id) '#' then begin
     match Reporting.loc_file l with
-    | Some file when !opt_magic_hash || StringSet.mem file ctx.internal_files -> to_ast_id' id
+    | Some file when !opt_allow_internal || StringSet.mem file ctx.internal_files -> to_ast_id' id
     | None -> to_ast_id' id
-    | _ -> raise (Reporting.err_general l "Identifier contains hash character and -dmagic_hash is unset")
+    | _ -> raise (Reporting.err_general l "Identifier contains hash character (internal only construct)")
   end
   else to_ast_id' id
 
@@ -1262,8 +1262,8 @@ let to_ast_lit (P.L_aux (lit, l)) =
   L_aux
     ( ( match lit with
       | P.L_unit -> L_unit
-      | P.L_zero -> L_zero
-      | P.L_one -> L_one
+      | P.L_zero -> L_bin [Non_empty (Bin_0, [])]
+      | P.L_one -> L_bin [Non_empty (Bin_1, [])]
       | P.L_true -> L_true
       | P.L_false -> L_false
       | P.L_undef -> L_undef
@@ -1506,14 +1506,14 @@ and to_ast_exp ctx exp =
   | P.E_return exp -> wrap (E_return (to_ast_exp ctx exp))
   | P.E_assert (cond, msg) -> wrap (E_assert (to_ast_exp ctx cond, to_ast_exp ctx msg))
   | P.E_internal_plet (pat, exp1, exp2) ->
-      if !opt_magic_hash then wrap (E_internal_plet (to_ast_pat ctx pat, to_ast_exp ctx exp1, to_ast_exp ctx exp2))
-      else raise (Reporting.err_general l "Internal plet construct found without --dmagic-hash")
+      if !opt_allow_internal then wrap (E_internal_plet (to_ast_pat ctx pat, to_ast_exp ctx exp1, to_ast_exp ctx exp2))
+      else raise (Reporting.err_general l "Internal plet construct found (internal only construct)")
   | P.E_internal_return exp ->
-      if !opt_magic_hash then wrap (E_internal_return (to_ast_exp ctx exp))
-      else raise (Reporting.err_general l "Internal return construct found without --dmagic-hash")
+      if !opt_allow_internal then wrap (E_internal_return (to_ast_exp ctx exp))
+      else raise (Reporting.err_general l "Internal return construct found (internal only construct)")
   | P.E_internal_assume (nc, exp) ->
-      if !opt_magic_hash then wrap (E_internal_assume (to_ast_constraint ctx nc, to_ast_exp ctx exp))
-      else raise (Reporting.err_general l "Internal assume construct found without --dmagic-hash")
+      if !opt_allow_internal then wrap (E_internal_assume (to_ast_constraint ctx nc, to_ast_exp ctx exp))
+      else raise (Reporting.err_general l "Internal assume construct found (internal only construct)")
   | P.E_deref exp -> wrap (E_app (Id_aux (Id "__deref", l), [to_ast_exp ctx exp]))
 
 and to_ast_measure ctx (P.Measure_aux (m, l)) : uannot internal_loop_measure =
@@ -1521,8 +1521,8 @@ and to_ast_measure ctx (P.Measure_aux (m, l)) : uannot internal_loop_measure =
     match m with
     | P.Measure_none -> Measure_none
     | P.Measure_some exp ->
-        if !opt_magic_hash then Measure_some (to_ast_exp ctx exp)
-        else raise (Reporting.err_general l "Internal loop termination measure found without -dmagic_hash")
+        if !opt_allow_internal then Measure_some (to_ast_exp ctx exp)
+        else raise (Reporting.err_general l "Internal loop termination measure found (internal only construct)")
   in
   Measure_aux (m, l)
 
@@ -1803,7 +1803,7 @@ let to_ast_reserved_type_id ctx id =
   let id = to_ast_id ctx id in
   if IdSet.mem id reserved_type_ids then begin
     match Reporting.loc_file (id_loc id) with
-    | Some file when !opt_magic_hash || StringSet.mem file ctx.internal_files -> id
+    | Some file when !opt_allow_internal || StringSet.mem file ctx.internal_files -> id
     | None -> id
     | Some file -> raise (Reporting.err_general (id_loc id) (sprintf "The type name %s is reserved" (string_of_id id)))
   end
@@ -2385,7 +2385,6 @@ let initial_ctx =
           ("nat", ([], P.K_type));
           ("int", ([], P.K_type));
           ("unit", ([], P.K_type));
-          ("bit", ([], P.K_type));
           ("string", ([], P.K_type));
           ("string_literal", ([], P.K_type));
           ("real", ([], P.K_type));
@@ -2512,6 +2511,7 @@ let generate_undefined_record id typq fields =
   let p_tup = function [pat] -> pat | pats -> mk_pat (P_tuple pats) in
   let pat =
     p_tup (quant_items typq |> List.map quant_item_param |> List.concat |> List.map (fun id -> mk_pat (P_id id)))
+    |> locate_pat gen_loc
   in
   [
     mk_val_spec (VS_val_spec (undefined_typschm id typq, prepend_id "undefined_" id, None));
@@ -2540,7 +2540,7 @@ let undefined_builtin_val_specs () =
   [
     extern_of_string (mk_id "internal_pick") "forall ('a:Type). list('a) -> 'a";
     extern_of_string (mk_id "undefined_bool") "unit -> bool";
-    extern_of_string (mk_id "undefined_bit") "unit -> bit";
+    extern_of_string (mk_id "undefined_bit") "unit -> bitvector(1)";
     extern_of_string (mk_id "undefined_int") "unit -> int";
     extern_of_string (mk_id "undefined_nat") "unit -> nat";
     extern_of_string (mk_id "undefined_real") "unit -> real";
@@ -2708,8 +2708,8 @@ let ast_of_def_string_with ?inline ocaml_pos ctx f str =
   let lexbuf = Lexing.from_string str in
   lexbuf.lex_curr_p <- { pos_fname = ""; pos_lnum = 1; pos_bol = 0; pos_cnum = 0 };
   inline_lexbuf lexbuf inline;
-  let internal = !opt_magic_hash in
-  opt_magic_hash := true;
+  let internal = !opt_allow_internal in
+  opt_allow_internal := true;
   let def =
     try Parser.def_eof (Lexer.token (ref [])) lexbuf
     with Parser.Error ->
@@ -2718,7 +2718,7 @@ let ast_of_def_string_with ?inline ocaml_pos ctx f str =
       raise (Reporting.err_syntax pos ("current token: " ^ tok))
   in
   let ast, ctx = Reporting.forbid_errors ocaml_pos (fun ast -> process_ast ctx ast) (P.Defs [(None, f [def])]) in
-  opt_magic_hash := internal;
+  opt_allow_internal := internal;
   (ast, ctx)
 
 let ast_of_def_string ?inline ocaml_pos ctx str = ast_of_def_string_with ?inline ocaml_pos ctx (fun x -> x) str

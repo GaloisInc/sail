@@ -9,6 +9,9 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
+
+abbrev bit := (BitVec 1)
 
 abbrev bits k_n := (BitVec k_n)
 
@@ -17,6 +20,7 @@ inductive option (k_a : Type) where
   | Some (_ : k_a)
   | None (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open option
 
 abbrev reg_index := Nat
 
@@ -95,6 +99,7 @@ instance : Inhabited (RegisterRef RegisterType (BitVec 64)) where
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception
+abbrev SailME := PreSailME RegisterType trivialChoiceSource exception
 
 
 XXXXXXXXX
@@ -112,13 +117,14 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 namespace Out.Functions
 
 open option
 open Register
 
-/-- Type quantifiers: k_ex2436_ : Bool, k_ex2435_ : Bool -/
+/-- Type quantifiers: k_ex2844_ : Bool, k_ex2843_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -166,7 +172,7 @@ def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
   if ((l ≥b n) : Bool)
   then ((sail_ones n) <<< i)
   else
-    (let one : (BitVec n) := (sail_mask n (0b1 : (BitVec 1)))
+    (let one : (BitVec n) := (sail_mask n (1#1 : (BitVec 1)))
     (((one <<< l) - one) <<< i))
 
 /-- Type quantifiers: n : Nat, n > 0 -/
@@ -224,7 +230,7 @@ def wX (n : Nat) (value : (BitVec 64)) : SailM Unit := do
 def rX (n : Nat) : SailM (BitVec 64) := do
   if ((n != 31) : Bool)
   then (reg_deref (GetElem?.getElem! GPRs n))
-  else (pure (0x0000000000000000 : (BitVec 64)))
+  else (pure 0x0000000000000000#64)
 
 def rPC (_ : Unit) : SailM (BitVec 64) := do
   readReg _PC
@@ -234,11 +240,11 @@ def wPC (pc : (BitVec 64)) : SailM Unit := do
 
 /-- Type quantifiers: r : Nat, 0 ≤ r ∧ r ≤ 31 -/
 def monad_test (r : Nat) : SailM (BitVec 1) := do
-  if (((← (rX r)) == (0x0000000000000000 : (BitVec 64))) : Bool)
+  if (((← (rX r)) == 0x0000000000000000#64) : Bool)
   then (pure 1#1)
   else
     (do
-      if (((← (rX r)) == (0x0000000000000001 : (BitVec 64))) : Bool)
+      if (((← (rX r)) == 0x0000000000000001#64) : Bool)
       then (pure 1#1)
       else (pure 0#1))
 

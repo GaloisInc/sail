@@ -316,10 +316,7 @@ and doc_typ ctx (Typ_aux (t, _) as typ) =
   | _ -> failwith ("Type " ^ string_of_typ_con typ ^ " " ^ string_of_typ typ ^ " not translatable yet.")
 
 and doc_typ_app ctx (A_aux (t, _) as typ) =
-  match t with
-  | A_typ t' -> doc_typ ctx t'
-  | A_bool nc -> failwith ("Constraint " ^ string_of_n_constraint nc ^ "not translatable yet.")
-  | A_nexp m -> doc_nexp ctx m
+  match t with A_typ t' -> doc_typ ctx t' | A_bool nc -> doc_nconstraint ctx nc | A_nexp m -> doc_nexp ctx m
 
 let captured_typ_var ((i, Typ_aux (t, _)) as typ) =
   match t with
@@ -371,26 +368,27 @@ let doc_typ_quant_only_vars ctx (TypQ_aux (tq, _) as tq_full) =
 
 let lean_escape_string s = Str.global_replace (Str.regexp "\"") "\\\"" s
 
-let doc_lit (L_aux (lit, l)) =
+let doc_lit ~width (L_aux (lit, l)) =
   match lit with
   | L_unit -> string "()"
-  | L_zero -> string "0#1"
-  | L_one -> string "1#1"
   | L_false -> string "false"
   | L_true -> string "true"
   | L_num i -> doc_big_int i
   | L_hex [] | L_bin [] -> string "BitVec.nil"
-  | L_hex hex -> utf8string ("0x" ^ string_of_hex_lit ~group_separator:"" ~case:Uppercase hex)
-  | L_bin bin -> utf8string ("0b" ^ string_of_bin_lit ~group_separator:"" bin)
+  | L_hex hex ->
+      let width_specifier = if width then "#" ^ string_of_int (hex_lit_length hex) else "" in
+      utf8string ("0x" ^ string_of_hex_lit ~group_separator:"" ~case:Uppercase hex ^ width_specifier)
+  | L_bin bin -> (
+      let width_specifier = if width then "#" ^ string_of_int (bin_lit_length bin) else "" in
+      (* Print single bits as just 0 or 1 without a 0b prefix *)
+      match bin with
+      | [Non_empty (Bin_0, [])] -> string ("0" ^ width_specifier)
+      | [Non_empty (Bin_1, [])] -> string ("1" ^ width_specifier)
+      | _ -> utf8string ("0b" ^ string_of_bin_lit ~group_separator:"" bin ^ width_specifier)
+    )
   | L_undef -> utf8string "(Fail \"undefined value of unsupported type\")"
   | L_string s -> utf8string ("\"" ^ lean_escape_string s ^ "\"")
   | L_real s -> utf8string s (* TODO test if this is really working *)
-
-let doc_vec_lit (L_aux (lit, _) as l) =
-  match lit with
-  | L_zero -> string "0"
-  | L_one -> string "1"
-  | _ -> failwith "Unexpected litteral found in vector: " ^^ doc_lit l
 
 let string_of_exp_con (E_aux (e, _)) =
   match e with
@@ -497,8 +495,7 @@ let rec doc_pat ?(need_parens = false) ?(in_vector = false) ctx in_match_bv (P_a
   let env = env_of_tannot annot in
   match p with
   | P_wild -> underscore
-  | P_lit lit when in_vector -> doc_vec_lit lit
-  | P_lit lit -> doc_lit lit
+  | P_lit lit -> doc_lit ~width:false lit
   | P_typ (Typ_aux (Typ_id (Id_aux (Id "bit", _)), _), p) when in_vector -> doc_pat ctx in_match_bv p ^^ string ":1"
   | P_typ (Typ_aux (Typ_app (Id_aux (Id id, _), [A_aux (A_nexp (Nexp_aux (Nexp_constant i, _)), _)]), _), p)
     when in_vector && (id = "bits" || id = "bitvector") ->
@@ -518,9 +515,7 @@ let rec doc_pat ?(need_parens = false) ?(in_vector = false) ctx in_match_bv (P_a
     when List.for_all (fun p -> match p with P_aux (P_lit _, _) -> true | _ -> false) pats && not in_match_bv ->
       string "0b" ^^ concat (List.map (doc_pat ~in_vector:true ctx in_match_bv) pats)
   | P_vector pats -> concat (List.map (doc_pat ~in_vector:true ctx in_match_bv) pats)
-  | P_vector_concat pats when in_vector ->
-      separate (string ",") (List.map (doc_pat ~in_vector:true ctx in_match_bv) pats)
-  | P_vector_concat pats -> separate (string ",") (List.map (doc_pat ~in_vector:true ctx in_match_bv) pats) |> brackets
+  | P_vector_concat pats -> doc_vector_concat pats
   | P_app (Id_aux (Id "None", _), p) -> string "none"
   | P_app (cons, pats) ->
       opt_parens
@@ -539,6 +534,27 @@ let rec doc_pat ?(need_parens = false) ?(in_vector = false) ctx in_match_bv (P_a
   | P_cons (hd_pat, tl_pat) ->
       parens (separate space [doc_pat ctx in_match_bv hd_pat; string "::"; doc_pat ctx in_match_bv tl_pat])
   | _ -> failwith ("Doc Pattern " ^ string_of_pat_con pat ^ " " ^ string_of_pat pat ^ " not translatable yet.")
+
+and doc_vector_concat pats =
+  let rec doc_part (P_aux (aux, (l, _)) as pat) =
+    match aux with
+    | P_lit (L_aux (L_bin bin, _)) ->
+        let bits = Semantics.bitlist_of_bin_lit bin in
+        concat_map (function Value_type.B0 -> char '0' | Value_type.B1 -> char '1') bits
+    | P_lit (L_aux (L_hex hex, _)) ->
+        let bits = Semantics.bitlist_of_hex_lit hex in
+        concat_map (function Value_type.B0 -> char '0' | Value_type.B1 -> char '1') bits
+    | P_id id -> (
+        match destruct_bitvector (env_of_pat pat) (typ_of_pat pat) with
+        | Some (Nexp_aux (Nexp_constant n, _)) ->
+            doc_id_ctor (fixup_match_id id) ^^ char ':' ^^ string (Big_int.to_string n)
+        | _ -> Reporting.unreachable l __POS__ "Found subpattern with unclear width in bitvector pattern"
+      )
+    | P_typ (_, pat) -> doc_part pat
+    | P_vector pats -> separate_map comma doc_part pats
+    | _ -> Reporting.unreachable l __POS__ ("Unexpected pattern in match_bv vector_concat pattern " ^ string_of_pat pat)
+  in
+  brackets (separate_map comma doc_part pats)
 
 let doc_pat_typ_ascription ctx (P_aux (p, (l, annot)) as pat) =
   match p with P_typ (ptyp, p) -> Some (doc_typ ctx ptyp) | _ -> None
@@ -808,16 +824,12 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
     in
     wrap (doc_exp arg_monadic ctx arg)
   in
-  let d_of_field (FE_aux (FE_fexp (field, e), _) as fexp) =
-    let field_monadic = has_effect e in
-    doc_fexp field_monadic ctx fexp
-  in
-  (* string (" /- " ^ string_of_exp_con full_exp ^ " -/ ") ^^ *)
+  let d_of_field (FE_aux (FE_fexp (field, e), _) as fexp) = doc_fexp (has_effect e) ctx fexp in
   match e with
   | E_id id ->
       if Env.is_register id env then wrap_with_left_arrow (not as_monadic) (string "readReg " ^^ doc_id_ctor id)
       else wrap_with_pure as_monadic (doc_id_ctor id)
-  | E_lit l -> wrap_with_pure as_monadic (doc_lit l)
+  | E_lit l -> wrap_with_pure as_monadic (doc_lit ~width:true l)
   | E_app (Id_aux (Id "None", _), _) -> wrap_with_pure as_monadic (string "none")
   | E_app (Id_aux (Id "Some", _), args) ->
       wrap_with_pure as_monadic
@@ -927,19 +939,14 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
             )
     )
   | E_vector vals ->
-      let pp =
-        match typ_of full_exp with
-        | Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp m, _)]), _)
-        | Typ_aux (Typ_app (Id_aux (Id "bits", _), [A_aux (A_nexp m, _)]), _) ->
-            nest 2
-              (wrap_with_pure as_monadic
-                 (parens (flow space [string "BitVec.join1"; brackets (separate_map comma_sp (d_of_arg ctx) vals)]))
-              )
-        | _ ->
-            string "#v"
-            ^^ wrap_with_pure as_monadic (brackets (nest 2 (separate_map comma_sp (d_of_arg ctx) (List.rev vals))))
-      in
-      pp
+      if is_bitvector_typ (typ_of full_exp) then
+        nest 2
+          (wrap_with_pure as_monadic
+             (parens (flow space [string "BitVec.join1"; brackets (separate_map comma_sp (d_of_arg ctx) vals)]))
+          )
+      else
+        string "#v"
+        ^^ wrap_with_pure as_monadic (brackets (nest 2 (separate_map comma_sp (d_of_arg ctx) (List.rev vals))))
   | E_typ (typ, e) ->
       if has_effect e then doc_exp as_monadic ctx e
       else wrap_with_pure as_monadic (parens (separate space [doc_exp false ctx e; colon; doc_typ ctx typ]))
@@ -1045,7 +1052,9 @@ and doc_exp (as_monadic : bool) ctx (E_aux (e, (l, annot)) as full_exp) =
   | E_cons (hd_e, tl_e) -> parens (separate space [doc_exp false ctx hd_e; string "::"; doc_exp false ctx tl_e])
   | _ -> failwith ("Expression " ^ string_of_exp_con full_exp ^ " " ^ string_of_exp full_exp ^ " not translatable yet.")
 
-and doc_fexp with_arrow ctx (FE_aux (FE_fexp (field, e), _)) = doc_id_ctor field ^^ string " := " ^^ doc_exp false ctx e
+and doc_fexp with_arrow ctx (FE_aux (FE_fexp (field, e), _)) =
+  let arrow = if with_arrow then leftarrow ^^ space else empty in
+  doc_id_ctor field ^^ string " := " ^^ arrow ^^ nest 2 (doc_exp with_arrow ctx e)
 
 let doc_binder ctx i t =
   let parenthesizer =
@@ -1245,7 +1254,8 @@ let doc_typdef ctx (TD_aux (td, tannot) as full_typdef) =
       let id = doc_id_ctor id in
       nest 2
         (flow (break 1) [string "inductive"; id; string "where"]
-        ^^ enums_doc ^^ hardline ^^ string "deriving" ^^ space ^^ separate comma_sp derivers
+        ^^ enums_doc ^^ hardline ^^ string "deriving" ^^ space ^^ separate comma_sp derivers ^^ hardline
+        ^^ string "open" ^^ space ^^ id
         )
   | TD_record (id, tq, fields, _) ->
       let fields = List.map (doc_typ_id ctx) fields in
@@ -1289,7 +1299,8 @@ let doc_typdef ctx (TD_aux (td, tannot) as full_typdef) =
       doc_typ_quant_in_comment ctx tq
       ^^ nest 2
            (nest 2 (flow space (remove_empties [string "inductive"; doc_id_ctor id; rectyp; string "where"]))
-           ^^ pp_tus ^^ hardline ^^ string "deriving" ^^ space ^^ separate comma_sp derivers
+           ^^ pp_tus ^^ hardline ^^ string "deriving" ^^ space ^^ separate comma_sp derivers ^^ hardline
+           ^^ string "open" ^^ space ^^ doc_id_ctor id
            )
   | _ -> failwith ("Type definition " ^ string_of_type_def_con full_typdef ^ " not translatable yet.")
 
@@ -1456,10 +1467,14 @@ let doc_monad_abbrev defs (has_registers : bool) =
   in
   let excdef = find_exc_typ defs in
   let pp_register_type = string "PreSailM RegisterType trivialChoiceSource exception" in
-  let monad = separate space [string "abbrev"; string "SailM"; coloneq; pp_register_type] ^^ hardline ^^ hardline in
-  separate hardline (remove_empties [excdef; monad])
+  let pp_register_type_e = string "PreSailME RegisterType trivialChoiceSource exception" in
+  let monad = separate space [string "abbrev"; string "SailM"; coloneq; pp_register_type] in
+  let monad_e =
+    separate space [string "abbrev"; string "SailME"; coloneq; pp_register_type_e] ^^ hardline ^^ hardline
+  in
+  separate hardline (remove_empties [excdef; monad; monad_e])
 
-let doc_instantiations ctx env =
+let doc_instantiations_v1 ctx env =
   let params = Monad_params.find_monad_parameters env in
   match params with
   | None -> empty
@@ -1483,6 +1498,57 @@ let doc_instantiations ctx env =
            ]
         )
       ^^ hardline
+
+let doc_instantiations_v2 ctx ast =
+  let type_substs, id_substs = Monad_params.find_instantiations ast in
+  let ts x d = KBindings.find_opt (mk_kid x) type_substs |> Option.fold ~none:(string d) ~some:(doc_typ_app ctx) in
+  let is x = Bindings.find_opt (mk_id x) id_substs |> Option.fold ~none:(string "fun _ => false") ~some:doc_id_ctor in
+  let pr ?(d = "Unit") x = string (x ^ " := ") ^^ ts x d in
+  let fn x = string (x ^ " := ") ^^ is x in
+  string "@[reducible]" ^^ hardline
+  ^^ nest 2
+       (separate hardline
+          [
+            string "instance : Arch where";
+            pr "addr_size" ~d:"64";
+            pr "addr_space";
+            pr "CHERI" ~d:"false";
+            pr "cap_size_log" ~d:"0";
+            pr "mem_acc";
+            fn "mem_acc_is_explicit";
+            fn "mem_acc_is_ifetch";
+            fn "mem_acc_is_ttw";
+            fn "mem_acc_is_relaxed";
+            fn "mem_acc_is_rel_acq_rcpc";
+            fn "mem_acc_is_rel_acq_rcsc";
+            fn "mem_acc_is_standalone";
+            fn "mem_acc_is_exclusive";
+            fn "mem_acc_is_atomic_rmw";
+            pr "trans_start";
+            pr "trans_end";
+            pr "abort";
+            pr "barrier";
+            pr "cache_op";
+            pr "tlbi";
+            pr "exn";
+            pr "sys_reg_id";
+          ]
+       )
+(*
+  mem_acc_is_explicit : mem_acc -> Bool
+  mem_acc_is_ifetch : mem_acc -> Bool
+  mem_acc_is_ttw : mem_acc -> Bool
+  mem_acc_is_relaxed : mem_acc -> Bool
+  mem_acc_is_rel_acq_rcpc : mem_acc -> Bool
+  mem_acc_is_rel_acq_rcsc : mem_acc -> Bool
+  mem_acc_is_standalone : mem_acc -> Bool
+  mem_acc_is_exclusive : mem_acc -> Bool
+  mem_acc_is_atomic_rmw : mem_acc -> Bool
+*)
+
+let doc_instantiations ctx env ast =
+  if Preprocess.have_symbol "CONCURRENCY_INTERFACE_V2" then doc_instantiations_v2 ctx ast
+  else doc_instantiations_v1 ctx env
 
 let main_function_stub effect_info has_registers =
   let open Effects in
@@ -1556,13 +1622,19 @@ let pp_ast_lean (env : Type_check.env) effect_info ({ defs; _ } as ast : Libsail
   let fun_args = populate_fun_args defs in
   let global = { effect_info; fun_args; kid_id_renames = KBindings.empty; kid_id_renames_rev = Bindings.empty } in
   let ctx = context_init env global in
+  let inst_defs, defs = Callgraph.partition_instantiation_definitions false defs in
+  let ast = { ast with defs } in
+  let _, instantiation_deps = doc_defs ctx inst_defs in
+  let instantiation_deps =
+    match instantiation_deps with [x] -> x | _ -> failwith "expected a single block of instantiation defs"
+  in
+  let instantiations = doc_instantiations ctx env defs in
   let has_registers = List.length regs > 0 in
   let register_refs =
     if has_registers then doc_reg_info env global regs
     else string "abbrev Register := PEmpty\nabbrev RegisterType : Register -> Type := PEmpty.elim\n\n"
   in
   let monad = doc_monad_abbrev defs has_registers in
-  let instantiations = doc_instantiations ctx env in
   let types, all_fundefss = doc_defs ctx defs in
   let imp_fundefss, main_fundefs =
     if imp_funcs_files = [] then ([], concat all_fundefss) else (Util.butlast all_fundefss, Util.last all_fundefss)
@@ -1576,7 +1648,7 @@ let pp_ast_lean (env : Type_check.env) effect_info ({ defs; _ } as ast : Libsail
     else []
   in
   let opens = IdSet.fold (fun id doc -> string "open " ^^ doc_id_ctor id ^^ hardline ^^ doc) !opens empty in
-  print types_file (types ^^ register_refs ^^ monad ^^ instantiations);
+  print types_file (types ^^ register_refs ^^ monad ^^ instantiation_deps ^^ instantiations);
   let _ =
     List.map2
       (fun file defs -> print file (separate hardline (remove_empties [opens; defs])))

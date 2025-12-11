@@ -9,6 +9,9 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
+
+abbrev bit := (BitVec 1)
 
 abbrev bits k_n := (BitVec k_n)
 
@@ -17,6 +20,7 @@ inductive option (k_a : Type) where
   | Some (_ : k_a)
   | None (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open option
 
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
@@ -24,6 +28,7 @@ abbrev RegisterType : Register -> Type := PEmpty.elim
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception
+abbrev SailME := PreSailME RegisterType trivialChoiceSource exception
 
 
 XXXXXXXXX
@@ -41,12 +46,13 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 namespace Out.Functions
 
 open option
 
-/-- Type quantifiers: k_ex708_ : Bool, k_ex707_ : Bool -/
+/-- Type quantifiers: k_ex808_ : Bool, k_ex807_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -94,7 +100,7 @@ def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
   if ((l ≥b n) : Bool)
   then ((sail_ones n) <<< i)
   else
-    (let one : (BitVec n) := (sail_mask n (0b1 : (BitVec 1)))
+    (let one : (BitVec n) := (sail_mask n (1#1 : (BitVec 1)))
     (((one <<< l) - one) <<< i))
 
 /-- Type quantifiers: n : Nat, n > 0 -/

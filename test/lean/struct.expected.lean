@@ -9,6 +9,9 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
+
+abbrev bit := (BitVec 1)
 
 abbrev bits k_n := (BitVec k_n)
 
@@ -17,6 +20,11 @@ inductive option (k_a : Type) where
   | Some (_ : k_a)
   | None (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open option
+
+inductive My_enum where | E1 | E2
+  deriving BEq, Inhabited, Repr
+  open My_enum
 
 structure My_struct where
   field1 : Int
@@ -35,12 +43,20 @@ structure My_mem_write_request
   tag : (Option Bool)
   deriving BEq, Inhabited, Repr
 
-abbrev Register := PEmpty
-abbrev RegisterType : Register -> Type := PEmpty.elim
+inductive Register : Type where
+  | r
+  deriving DecidableEq, Hashable, Repr
+open Register
 
+abbrev RegisterType : Register → Type
+  | .r => Int
+
+instance : Inhabited (RegisterRef RegisterType Int) where
+  default := .Reg r
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception
+abbrev SailME := PreSailME RegisterType trivialChoiceSource exception
 
 
 XXXXXXXXX
@@ -58,12 +74,15 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 namespace Out.Functions
 
 open option
+open Register
+open My_enum
 
-/-- Type quantifiers: k_ex769_ : Bool, k_ex768_ : Bool -/
+/-- Type quantifiers: k_ex941_ : Bool, k_ex940_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -111,7 +130,7 @@ def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
   if ((l ≥b n) : Bool)
   then ((sail_ones n) <<< i)
   else
-    (let one : (BitVec n) := (sail_mask n (0b1 : (BitVec 1)))
+    (let one : (BitVec n) := (sail_mask n (1#1 : (BitVec 1)))
     (((one <<< l) - one) <<< i))
 
 /-- Type quantifiers: n : Nat, n > 0 -/
@@ -156,9 +175,23 @@ def concat_str_bits (str : String) (x : (BitVec k_n)) : String :=
 def concat_str_dec (str : String) (x : Int) : String :=
   (HAppend.hAppend str (Int.repr x))
 
+def undefined_My_enum (_ : Unit) : SailM My_enum := do
+  (internal_pick [E1, E2])
+
+/-- Type quantifiers: arg_ : Nat, 0 ≤ arg_ ∧ arg_ ≤ 1 -/
+def My_enum_of_num (arg_ : Nat) : My_enum :=
+  match arg_ with
+  | 0 => E1
+  | _ => E2
+
+def num_of_My_enum (arg_ : My_enum) : Int :=
+  match arg_ with
+  | E1 => 0
+  | E2 => 1
+
 def undefined_My_struct (_ : Unit) : SailM My_struct := do
-  (pure { field1 := (← (undefined_int ()))
-          field2 := (← (undefined_bit ())) })
+  (pure { field1 := ← (undefined_int ())
+          field2 := ← (undefined_bitvector 1) })
 
 def struct_field2 (s : My_struct) : (BitVec 1) :=
   s.field2
@@ -175,22 +208,24 @@ def mk_struct (i : Int) (b : (BitVec 1)) : My_struct :=
   { field1 := i
     field2 := b }
 
+def mk_struct_effectful (e : My_enum) (b : (BitVec 1)) : SailM My_struct := do
+  (pure { field1 := ← match e with
+            | E1 => readReg r
+            | E2 => (pure 2)
+          field2 := b })
+
 def undef_struct (x : (BitVec 1)) : SailM My_struct := do
   (undefined_My_struct ())
 
-def match_struct (value : My_struct) : SailM Int := do
+def match_struct (value : My_struct) : Int :=
   match value with
-  | { field2 := 0#1, field1 := g__0 } => (pure 0)
-  | { field1 := field1, field2 := 1#1 } => (pure field1)
-  | _ =>
-    (do
-      assert false "Pattern match failure at struct.sail:39.4-42.5"
-      throw Error.Exit)
+  | { field2 := 0, field1 := g__0 } => 0
+  | { field1 := field1, field2 := _ } => field1
 
-def initialize_registers (_ : Unit) : Unit :=
-  ()
+def initialize_registers (_ : Unit) : SailM Unit := do
+  writeReg r (← (undefined_int ()))
 
-def sail_model_init (x_0 : Unit) : Unit :=
+def sail_model_init (x_0 : Unit) : SailM Unit := do
   (initialize_registers ())
 
 end Out.Functions

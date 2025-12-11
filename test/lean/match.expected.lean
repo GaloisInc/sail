@@ -9,6 +9,9 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
+
+abbrev bit := (BitVec 1)
 
 abbrev bits k_n := (BitVec k_n)
 
@@ -17,9 +20,11 @@ inductive option (k_a : Type) where
   | Some (_ : k_a)
   | None (_ : Unit)
   deriving Inhabited, BEq, Repr
+  open option
 
 inductive E where | A | B | C
   deriving BEq, Inhabited, Repr
+  open E
 
 inductive Register : Type where
   | r_C
@@ -38,6 +43,7 @@ instance : Inhabited (RegisterRef RegisterType E) where
 abbrev exception := Unit
 
 abbrev SailM := PreSailM RegisterType trivialChoiceSource exception
+abbrev SailME := PreSailME RegisterType trivialChoiceSource exception
 
 
 XXXXXXXXX
@@ -55,6 +61,7 @@ set_option linter.unusedVariables false
 set_option match.ignoreUnusedAlts true
 
 open Sail
+open ConcurrencyInterfaceV1
 
 namespace Out.Functions
 
@@ -62,7 +69,7 @@ open option
 open Register
 open E
 
-/-- Type quantifiers: k_ex823_ : Bool, k_ex822_ : Bool -/
+/-- Type quantifiers: k_ex942_ : Bool, k_ex941_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -110,7 +117,7 @@ def slice_mask {n : _} (i : Int) (l : Int) : (BitVec n) :=
   if ((l ≥b n) : Bool)
   then ((sail_ones n) <<< i)
   else
-    (let one : (BitVec n) := (sail_mask n (0b1 : (BitVec 1)))
+    (let one : (BitVec n) := (sail_mask n (1#1 : (BitVec 1)))
     (((one <<< l) - one) <<< i))
 
 /-- Type quantifiers: n : Nat, n > 0 -/
@@ -205,10 +212,10 @@ def match_read (x : E) : SailM Unit := do
     | C => readReg r_C)
 
 def const16 (_ : Unit) : ((BitVec 16) × Bool) :=
-  ((0xFFFF : (BitVec 16)), true)
+  (0xFFFF#16, true)
 
 def const32 (_ : Unit) : ((BitVec 32) × Bool) :=
-  ((0xEEEEEEEE : (BitVec 32)), false)
+  (0xEEEEEEEE#32, false)
 
 /-- Type quantifiers: k_n : Nat, k_n ≥ 0 -/
 def match_width (x : (BitVec k_n)) : (BitVec (2 * k_n)) :=
@@ -221,7 +228,7 @@ def match_width (x : (BitVec k_n)) : (BitVec (2 * k_n)) :=
 
 def match_option_bitvec (x : (Option (BitVec 16))) : Int :=
   match x with
-  | .some 0b1111111111111111 => 1
+  | .some 0xFFFF => 1
   | _ => 0
 
 def initialize_registers (_ : Unit) : SailM Unit := do
